@@ -104,26 +104,98 @@
 /* Theme toggle button */
 .theme-toggle{width:36px;height:36px;border-radius:10px;background:var(--light);color:var(--purple);display:grid;place-items:center;font-size:16px;padding:0}
 
-/* Suite Top Header Bar (Padronizado Microsoft Suite - Módulo Gestão de Pesos Esmeralda) */
+/* Padronização de Fundo em Tela Cheia (sem faixa branca no login ou operações) */
+html,body{min-height:100vh;min-height:100dvh;margin:0;background:#f8fafc;color:#0f172a}
+html.dark,body.dark,html:has(body.dark){background:#0f172a;color:#f1f5f9}
+#app{min-height:100vh;min-height:100dvh;display:flex;flex-direction:column}
+.shell{max-width:1100px;width:100%;margin:0 auto;padding:24px 24px 60px;flex:1}
+.login{max-width:450px;width:100%;margin:4vh auto}
+
+/* Suite Top Header Bar (Padronizado Suíte Sistema Aéreo - Módulo Gestão de Pesos Esmeralda) */
 .suite-topbar{background:#ffffff;border-bottom:1px solid #e2e8f0;position:sticky;top:0;z-index:50;transition:background .2s,border-color .2s}
-.suite-topbar-inner{max-width:1280px;margin:0 auto;padding:0 16px;height:64px;display:flex;align-items:center;justify-content:space-between;gap:12px}
-.suite-brand-wrap{display:flex;align-items:center;gap:18px;min-width:0}
-.suite-brand{display:flex;align-items:center;gap:12px;cursor:pointer;text-decoration:none;color:inherit}
+.suite-topbar-inner{max-width:1280px;margin:0 auto;padding:0 16px;height:64px;display:flex;align-items:center;justify-content:space-between;gap:10px}
+.suite-brand-wrap{display:flex;align-items:center;gap:14px;min-width:0;flex-shrink:0}
+.suite-brand{display:flex;align-items:center;gap:10px;cursor:pointer;text-decoration:none;color:inherit;flex-shrink:0}
 .suite-logo-box{width:32px;height:32px;border-radius:8px;background:#059669;display:flex;align-items:center;justify-content:center;color:white;box-shadow:0 1px 2px rgba(0,0,0,.08);flex-shrink:0}
-.suite-brand-title{font-size:14px;font-weight:700;color:#0f172a;line-height:1.2;margin:0}
-.suite-brand-sub{font-size:10px;font-weight:700;color:#059669;margin:1px 0 0;letter-spacing:.1px}
+.suite-brand-title{font-size:14px;font-weight:700;color:#0f172a;line-height:1.2;margin:0;white-space:nowrap}
+.suite-brand-sub{font-size:10px;font-weight:700;color:#059669;margin:1px 0 0;letter-spacing:.1px;white-space:nowrap}
 .suite-op-pill{display:inline-flex;align-items:center;padding:4px 10px;border-radius:6px;background:#ecfdf5;color:#047857;border:1px solid #a7f3d0;font-size:12px;font-weight:700;white-space:nowrap}
-.suite-actions{display:flex;align-items:center;gap:10px}
-.suite-icon-btn{width:34px;height:34px;border-radius:12px;background:#f1f5f9;color:#475569;display:inline-flex;align-items:center;justify-content:center;font-size:15px;padding:0;transition:background .15s}
-.suite-icon-btn:hover{background:#e2e8f0}
-.suite-user-box{display:flex;align-items:center;gap:8px}
-.suite-user-name{font-size:12px;font-weight:700;color:#334155;text-transform:uppercase}
-.suite-finish-btn{display:inline-flex;align-items:center;gap:6px;padding:7px 12px;border-radius:12px;background:#e11d48;color:white;font-size:12px;font-weight:700}
-.suite-finish-btn:hover{background:#f43f5e}
-.shell{max-width:1100px;margin:auto;padding:24px 24px 60px}
+
+/* Centro do Cabeçalho: Logo FedEx Linehaul */
+.suite-center-logo{flex:1;display:flex;align-items:center;justify-content:center;user-select:none;pointer-events:none;padding:0 6px;min-width:0}
+.fedex-linehaul-pill{display:inline-flex;align-items:center;gap:10px;padding:4px 14px;border-radius:12px;background:rgba(248,250,252,0.85);border:1px solid rgba(226,232,240,0.8);box-shadow:0 1px 2px rgba(0,0,0,0.03);white-space:nowrap}
+.fedex-wordmark{display:flex;align-items:baseline;letter-spacing:-0.05em;line-height:1;font-weight:900;font-size:20px;font-family:'Inter','Arial Black',sans-serif}
+.fedex-fed{color:#4D148C}
+.fedex-ex{color:#FF6200;margin-left:-0.5px}
+.fedex-divider{height:16px;width:1.5px;background:#cbd5e1;border-radius:999px;flex-shrink:0}
+.fedex-sub{display:flex;align-items:center;gap:6px}
+.fedex-plane{width:14px;height:14px;color:#FF6200;flex-shrink:0}
+.fedex-linehaul-text{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:0.22em;color:#334155}
+
+.suite-actions{display:flex;align-items:center;gap:10px;flex-shrink:0}
+.suite-icon-btn{width:34px;height:34px;border-radius:12px;background:#f1f5f9;color:#475569;display:inline-flex;align-items:center;justify-content:center;font-size:15px;padding:0;transition:background .15s,color .15s;flex-shrink:0}
+.suite-icon-btn:hover{background:#e2e8f0;color:#0f172a}
+.suite-user-info{display:flex;align-items:center;gap:8px;margin-right:2px}
+.suite-user-name{font-size:12px;font-weight:700;color:#334155;text-transform:uppercase;white-space:nowrap}
+.suite-logout-btn{background:none;border:0;padding:4px;color:#94a3b8;display:inline-flex;align-items:center;justify-content:center;border-radius:8px;transition:color .15s,background .15s}
+.suite-logout-btn:hover{color:#f43f5e;background:rgba(244,63,94,0.08)}
+
+/* Abas da Tela de Operações no padrão Controle Operacional e Gestão de Minutas */
+.tabs{display:flex;align-items:center;gap:16px;margin:24px 0 18px;border-bottom:1px solid #e2e8f0;padding-bottom:8px}
+.tabs button{padding:0 0 8px 0;margin-bottom:-9px;border-radius:0;background:transparent;color:#64748b;font-size:14px;font-weight:700;border-bottom:2px solid transparent;transition:color .15s,border-color .15s}
+.tabs button:hover:not(.active){color:#334155}
+.tabs button.active{background:transparent;color:#059669;border-bottom:2px solid #059669}
+.tabs button.tab-reload-btn{padding:2px 6px;margin-bottom:-4px;border:0;color:#94a3b8;font-size:15px;border-radius:8px}
+.tabs button.tab-reload-btn:hover{color:#059669;background:rgba(16,185,129,0.08)}
+
+/* Cards de Histórico com botões Reabrir Operação (verde no tema) e Consultar -> */
+.op-history-card{cursor:default;flex-wrap:wrap;gap:12px;padding:20px 24px}
+.op-history-info{cursor:pointer;flex:1;min-width:200px}
+.op-history-info strong{display:block;font-size:18px;margin:0 0 4px}
+.op-history-actions{display:flex;align-items:center;gap:8px;flex-shrink:0}
+.btn-reopen-op{padding:8px 16px;border-radius:12px;background:rgba(16,185,129,0.12);color:#059669;font-size:12px;font-weight:700;transition:background .15s;white-space:nowrap}
+.btn-reopen-op:hover{background:rgba(16,185,129,0.22)}
+.btn-consult-op{padding:8px 12px;border-radius:12px;background:#f1f5f9;color:#334155;font-size:12px;font-weight:700;transition:background .15s;white-space:nowrap}
+.btn-consult-op:hover{background:#e2e8f0}
+
+@media(max-width:650px){
+  .suite-topbar-inner{padding:0 10px;gap:6px;height:58px}
+  .suite-brand{gap:8px}
+  .suite-logo-box{width:28px;height:28px;border-radius:7px}
+  .suite-brand-title{font-size:12px}
+  .suite-brand-sub{font-size:9px}
+  .suite-op-pill{display:none}
+  .suite-center-logo{padding:0 2px}
+  .fedex-linehaul-pill{padding:3px 8px;gap:6px;border-radius:9px}
+  .fedex-wordmark{font-size:15px}
+  .fedex-divider{height:12px}
+  .fedex-plane{width:11px;height:11px}
+  .fedex-linehaul-text{font-size:9px;letter-spacing:0.14em}
+  .suite-actions{gap:6px}
+  .suite-icon-btn{width:30px;height:30px;border-radius:10px}
+  .suite-user-name{font-size:11px;max-width:68px;overflow:hidden;text-overflow:ellipsis}
+  .op-history-card{padding:18px}
+  .op-history-actions{width:100%;justify-content:flex-end}
+}
+@media(max-width:390px){
+  .suite-user-name{display:none}
+}
 
 /* Dark Mode — Padronizado Slate-900 (#0f172a) & Slate-800 (#1e293b) + Verde Esmeralda (#10b981 / #059669) */
 body.dark{color:#f1f5f9;background:#0f172a;--purple:#10b981;--light:rgba(16,185,129,0.14);--muted:#94a3b8}
+body.dark .fedex-linehaul-pill{background:rgba(15,23,42,0.55);border-color:rgba(51,65,85,0.75)}
+body.dark .fedex-fed{color:#a855f7}
+body.dark .fedex-divider{background:#475569}
+body.dark .fedex-linehaul-text{color:#e2e8f0}
+body.dark .tabs{border-bottom-color:#334155}
+body.dark .tabs button{color:#94a3b8}
+body.dark .tabs button:hover:not(.active){color:#cbd5e1}
+body.dark .tabs button.active{background:transparent;color:#34d399;border-bottom-color:#34d399}
+body.dark .tabs button.tab-reload-btn:hover{color:#34d399;background:rgba(16,185,129,0.12)}
+body.dark .btn-reopen-op{background:rgba(16,185,129,0.14);color:#34d399}
+body.dark .btn-reopen-op:hover{background:rgba(16,185,129,0.24)}
+body.dark .btn-consult-op{background:#334155;color:#e2e8f0}
+body.dark .btn-consult-op:hover{background:#475569}
 body.dark .suite-topbar{background:#1e293b;border-color:#334155}
 body.dark .suite-brand-title{color:#ffffff}
 body.dark .suite-brand-sub{color:#34d399}
@@ -334,8 +406,8 @@ async function savePalletMetaForOp(opId,recId,metaObj){
 let realtime=null,recordChannel=null,live=false,opsLive=false,recordEpoch=0,refreshTimer=null;
 let darkMode=false,boardTab='dest',destSummaryQuery='',recentQuery='',recentFilter='ALL',audioCtx=null;
 const HIGH_WEIGHT_KG=100,HIGH_BOX_UNIT_KG=50,HIGH_SACA_KG=30;
-try{const st=localStorage.getItem('peso-equipe-theme');darkMode=st?st==='dark':true;if(darkMode)document.body.classList.add('dark')}catch{darkMode=true;document.body.classList.add('dark')}
-function toggleTheme(){darkMode=!darkMode;document.body.classList.toggle('dark',darkMode);try{localStorage.setItem('peso-equipe-theme',darkMode?'dark':'light')}catch{}render()}
+try{const st=localStorage.getItem('peso-equipe-theme');darkMode=st?st==='dark':true;document.body.classList.toggle('dark',darkMode);document.documentElement.classList.toggle('dark',darkMode)}catch{darkMode=true;document.body.classList.add('dark');document.documentElement.classList.add('dark')}
+function toggleTheme(){darkMode=!darkMode;document.body.classList.toggle('dark',darkMode);document.documentElement.classList.toggle('dark',darkMode);try{localStorage.setItem('peso-equipe-theme',darkMode?'dark':'light')}catch{}render()}
 function unlockAudio(){try{const Ctx=window.AudioContext||window.webkitAudioContext;if(!Ctx)return;if(!audioCtx)audioCtx=new Ctx();if(audioCtx.state==='suspended')audioCtx.resume()}catch{}}
 function playScanBeep(){try{const Ctx=window.AudioContext||window.webkitAudioContext;if(!Ctx)return;if(!audioCtx)audioCtx=new Ctx();if(audioCtx.state==='suspended')audioCtx.resume();const now=audioCtx.currentTime,osc=audioCtx.createOscillator(),gain=audioCtx.createGain();osc.type='sine';osc.frequency.setValueAtTime(1850,now);osc.frequency.setValueAtTime(2450,now+0.045);gain.gain.setValueAtTime(0.18,now);gain.gain.exponentialRampToValueAtTime(0.001,now+0.12);osc.connect(gain);gain.connect(audioCtx.destination);osc.start(now);osc.stop(now+0.12)}catch{}}
 function catBadgeHtml(kind){const label=kind==='SEM_CLASSIFICACAO'?'Sem classificação':kind;return `<span class="cat-badge cat-${esc(kind)}">${esc(label)}</span>`}
@@ -372,6 +444,27 @@ function brand(){
     </div>
   </div>`;
 }
+function themeIconSvg(){
+  return darkMode
+    ? `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>`
+    : `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>`;
+}
+function fedexCenterLogoHtml(){
+  return `<div class="suite-center-logo">
+    <div class="fedex-linehaul-pill">
+      <div class="fedex-wordmark">
+        <span class="fedex-fed">Fed</span><span class="fedex-ex">Ex</span>
+      </div>
+      <span class="fedex-divider"></span>
+      <div class="fedex-sub">
+        <svg class="fedex-plane" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z"/>
+        </svg>
+        <span class="fedex-linehaul-text">Linehaul</span>
+      </div>
+    </div>
+  </div>`;
+}
 function shell(content){
   const curOp = active ? op() : null;
   app.innerHTML=`<header class="suite-topbar">
@@ -380,25 +473,23 @@ function shell(content){
         ${brand()}
         ${curOp ? `<span class="suite-op-pill">${esc(curOp.nome)}</span>` : ''}
       </div>
+      ${fedexCenterLogoHtml()}
       <div class="suite-actions">
-        <span class="connection ${connected?'online':'offline'}">${connected?'● Online':'● Sem conexão'}</span>
-        <button type="button" class="suite-icon-btn" id="topReloadBtn" title="Sincronizar">↻</button>
-        <button type="button" class="suite-icon-btn" id="toggleTheme" title="${darkMode?'Modo claro':'Modo escuro'}" aria-label="Alternar tema claro ou escuro">${darkMode?'☀️':'🌙'}</button>
-        ${state.name?`<button class="user-switch suite-user-box" id="switchUser" title="Trocar usuário"><span class="suite-user-name">${esc(state.name)}</span><span class="avatar">${esc(state.name.slice(0,2))}</span></button>`:''}
+        <button type="button" class="suite-icon-btn" id="toggleTheme" title="Tema" aria-label="Alternar tema">${themeIconSvg()}</button>
+        ${state.name?`<div class="suite-user-info"><span class="suite-user-name">${esc(state.name)}</span><button type="button" class="suite-logout-btn" id="switchUser" title="Trocar Usuário" aria-label="Trocar Usuário"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg></button></div>`:''}
       </div>
     </div>
   </header>
-  <div class="shell">${content}<p class="note">Sistema Aéreo — Gestão de Pesos. Pesagens compartilhadas pela equipe em tempo real (histórico retido por 48h).<br>Internet necessária para salvar. ${active&&live?'Atualizações ao vivo.':'Atualização automática disponível.'}</p></div>`;
+  <div class="shell">${content}</div>`;
   if($('#brandHome'))$('#brandHome').onclick=()=>{if(state.name){active=null;screen='ops';render()}};
-  if($('#topReloadBtn'))$('#topReloadBtn').onclick=refresh;
   if($('#toggleTheme'))$('#toggleTheme').onclick=toggleTheme;
   if($('#switchUser'))$('#switchUser').onclick=()=>{selectedUser=null;state.name='';try{localStorage.removeItem('peso-equipe-user')}catch{}screen='login';render()};
 }
 function render(){if(stage){wizard();return}if(scanning)return;if(loading){shell('<div class="empty">Conectando à operação da equipe…</div>');return}if(!connected&&!users.length){shell('<section class="login card"><h1>Vamos conectar?</h1><p>Não foi possível acessar o banco neste painel restrito. Confira sua conexão ou abra a demonstração para testar o histórico por destino.</p><button id="retry" class="primary wide">Tentar novamente</button><button id="demoBtn" class="secondary wide" style="margin-top:10px">Testar prévia com dados de exemplo →</button></section>');$('#retry').onclick=()=>{loading=true;boot()};$('#demoBtn').onclick=loadDemoMode;return}
-if(screen==='login'){shell(`<section class="login"><span class="eyebrow">PESAGEM DA OPERAÇÃO</span><h1>Quem está pesando?</h1><p>Selecione seu nome para identificar os lançamentos.</p><div class="card user-list">${users.map(u=>`<button class="user-option" data-user="${esc(u.id)}"><span class="avatar">${esc(u.nome.slice(0,2))}</span><b>${esc(u.nome)}</b><span class="arrow">→</span></button>`).join('')}<button class="secondary wide" id="addUser">＋ Adicionar usuário</button></div><button class="plain wide" id="installHelp">Como instalar no celular?</button></section>`);document.querySelectorAll('[data-user]').forEach(b=>b.onclick=()=>{selectedUser=b.dataset.user;state.name=users.find(u=>u.id===selectedUser).nome;try{localStorage.setItem('peso-equipe-user',selectedUser)}catch{}screen='ops';render()});$('#addUser').onclick=addUser;$('#installHelp').onclick=installHelp;return}
-if(screen==='ops'){const open=state.ops.filter(o=>o.status==='ABERTA'),closed=state.ops.filter(o=>o.status==='FINALIZADA'),rows=historyView?closed:open;shell(`<div class="intro"><div><span class="eyebrow">SEU ESPAÇO DE TRABALHO</span><h1>Olá, ${esc(state.name)}.</h1><p>${historyView?'Operações finalizadas nas últimas 48 horas.':'Uma equipe. Uma operação. Todos os pesos.'}</p></div><button class="primary" id="create" ${open.length?'disabled':''}>＋ Criar operação</button></div><nav class="tabs"><button id="tabOpen" class="${!historyView?'active':''}">Em andamento (${open.length})</button><button id="tabHistory" class="${historyView?'active':''}">Histórico 48h (${closed.length})</button><button id="reload" class="plain" aria-label="Atualizar operações">↻</button></nav>${rows.map(o=>`<button class="op" data-op="${esc(o.id)}"><div><span class="${o.status==='ABERTA'?'green':'closed-badge'}">${o.status==='ABERTA'?'● Em andamento':'Finalizada'}</span><strong>${esc(o.nome)}</strong><span class="small muted">${esc(o.date)}${o.finalizada_em?' · Finalizada às '+showTime(o.finalizada_em):' · Entrar para lançar e conferir pesos'}</span></div><span class="arrow">→</span></button>`).join('')||`<div class="card empty">${historyView?'Nenhuma operação finalizada.':'Nenhuma operação aberta. Crie a operação do dia para começar.'}</div>`}<button class="plain" id="installHelp">Instalar no celular</button>`);$('#create').onclick=create;$('#tabOpen').onclick=()=>{historyView=false;render()};$('#tabHistory').onclick=()=>{historyView=true;render()};$('#reload').onclick=refresh;$('#installHelp').onclick=installHelp;document.querySelectorAll('[data-op]').forEach(b=>b.onclick=()=>enterOperation(b.dataset.op));return}
-const o=op();if(!o){screen='ops';render();return}const t=sum(o.records),closed=o.status==='FINALIZADA';shell(`<button class="back" id="back">← Todas as operações</button><div class="intro"><div><span class="eyebrow">${esc(o.date)} · ${closed?'OPERAÇÃO FINALIZADA':'OPERAÇÃO EM ANDAMENTO'}</span><h1>${esc(o.nome)}</h1><p>${closed?'Relatório disponível. Reabra para corrigir lançamentos.':'Pesagens reunidas por destino.'}</p></div>${closed?'':`<div class="operation-actions priority-actions">${hasCategories?`<div class="main-types"><button class="primary" id="insertBox" ${!o.loaded?'disabled':''}><svg class="type-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="M3 8v10l9 5 9-5V8M12 13v10M7.5 5.5l9 5v4"/></svg><span>INSERIR CAIXA</span></button><button class="primary" id="insertBag" ${!o.loaded?'disabled':''}><svg class="type-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M8 3h8l-2 4h-4L8 3Z"/><path d="M9 7h6M10 7C9 10 4 13 4 18c0 3 3 4 8 4s8-1 8-4c0-5-5-8-6-11"/><path d="m14 8 3 2M9 16c0-2 1-3 2-4"/></svg><span>INSERIR SACA</span></button></div><div class="other-types-label">OUTROS TIPOS</div><div class="special-types"><button class="secondary" id="insertdg" ${!o.loaded?'disabled':''}>DG</button><button class="secondary" id="insertPallet" ${!o.loaded?'disabled':''}>PALLET</button>${hasDelivery?`<button class="secondary" id="insertDelivery" ${!o.loaded?'disabled':''}>DELIVERY</button>`:''}${hasComail?`<button class="secondary" id="insertComail" ${!o.loaded?'disabled':''}>COMAIL</button>`:''}</div>`:`<button class="primary" id="insert" ${!o.loaded?'disabled':''}>＋ Inserir peso</button><button class="secondary" id="insertdg" ${!o.loaded?'disabled':''}>▣ INSERIR DG</button><button class="secondary" id="insertPallet" ${!o.loaded?'disabled':''}>▣ INSERIR PALLET</button>`}</div>`}</div>${!connected?'<div class="connection-warning">Sem conexão: os valores exibidos podem estar desatualizados.</div>':''}<div class="stats"><div class="card stat"><span>Volumes pesados</span><strong>${t.vol}</strong></div><div class="card stat"><span>Peso total · kg</span><strong>${fmt(t.kg)}</strong></div><div class="card stat"><span>Lançamentos</span><strong>${o.records.length}</strong></div></div>${specialStatsHtml(o)}<div class="toolbar"><button class="secondary" id="export" ${!o.loaded?'disabled':''}>↓ Exportar Excel</button><button class="plain" id="reload">↻ Atualizar</button><button class="${closed?'secondary':'plain'}" id="statusAction">${closed?'Reabrir operação':'Finalizar operação'}</button></div><div class="board-switcher"><div class="board-tabs" role="tablist"><button type="button" class="board-tab ${boardTab==='dest'?'active':''}" id="tabBoardDest">Totais por destino (${grouped(o.records).length})</button><button type="button" class="board-tab ${boardTab==='recent'?'active':''}" id="tabBoardRecent">Últimos lançamentos (${o.records.length})</button></div><div class="swipe-hint">← Deslize para o lado para alternar entre as listas →</div></div><div class="grid swipe-grid" id="boardGrid"><section class="card board-panel ${boardTab==='dest'?'':'hidden-mobile'}"><div class="sectionhead"><h2>Totais por destino</h2><span class="chip" id="destCountBadge">${grouped(o.records).length} praças · kg</span></div><div class="filter-bar"><input type="search" id="destSummarySearch" class="input filter-search" placeholder="Buscar código ou cidade (ex.: BELA, Manaus)…" autocomplete="off" value="${esc(destSummaryQuery)}"></div><div id="destSummaryListContainer">${renderDestSummaryRows(o)}</div><div class="total"><span>Total geral</span><span>${fmt(t.kg)} kg</span></div><button class="secondary wide" id="report" style="margin-top:16px" ${!o.loaded?'disabled':''}>Ver resumo da operação ↗</button></section><section class="card board-panel ${boardTab==='recent'?'':'hidden-mobile'}"><div class="sectionhead"><h2>Últimos lançamentos</h2><span class="small muted" id="recentCountLabel">Mais recentes</span></div><div class="filter-bar"><input type="search" id="recordSearch" class="input filter-search" placeholder="Buscar destino, AWB ou colega…" autocomplete="off" value="${esc(recentQuery)}"><div class="filter-chips">${[['ALL','Todos'],['CAIXA','CAIXA'],['SACA','SACA'],['PALLET','PALLET'],['DG','DG'],['DELIVERY','DELIVERY'],['COMAIL','COMAIL']].map(([k,label])=>`<button type="button" class="filter-chip ${recentFilter===k?'active':''}" data-filter-kind="${k}">${label}</button>`).join('')}</div></div><div id="recentListContainer">${renderRecentRows(o,closed)}</div></section></div>`);
-$('#back').onclick=()=>{screen='ops';active=null;if(recordChannel){realtime.removeChannel(recordChannel);recordChannel=null}render()};$('#reload').onclick=refresh;$('#statusAction').onclick=changeStatus;$('#report').onclick=report;$('#export').onclick=exportExcel;
+if(screen==='login'){shell(`<section class="login"><span class="eyebrow">ACESSO AO SISTEMA</span><h1>Quem está pesando?</h1><p>Selecione seu nome para identificar os lançamentos.</p><div class="card user-list">${users.map(u=>`<button class="user-option" data-user="${esc(u.id)}"><span class="avatar">${esc(u.nome.slice(0,2))}</span><b>${esc(u.nome)}</b><span class="arrow">→</span></button>`).join('')}<button class="secondary wide" id="addUser">＋ Adicionar usuário</button></div></section>`);document.querySelectorAll('[data-user]').forEach(b=>b.onclick=()=>{selectedUser=b.dataset.user;state.name=users.find(u=>u.id===selectedUser).nome;try{localStorage.setItem('peso-equipe-user',selectedUser)}catch{}screen='ops';render()});$('#addUser').onclick=addUser;return}
+if(screen==='ops'){const open=state.ops.filter(o=>o.status==='ABERTA'),closed=state.ops.filter(o=>o.status==='FINALIZADA'),rows=historyView?closed:open;shell(`<div class="intro"><div><span class="eyebrow">SEU ESPAÇO DE TRABALHO</span><h1>Olá, ${esc(state.name)}.</h1><p>${historyView?'Operações finalizadas nas últimas 48 horas.':'Uma equipe. Uma operação. Todos os pesos.'}</p></div><button class="primary" id="create" ${open.length?'disabled':''}>＋ Criar operação</button></div><nav class="tabs"><button id="tabOpen" class="${!historyView?'active':''}">Em andamento (${open.length})</button><button id="tabHistory" class="${historyView?'active':''}">Histórico 48h (${closed.length})</button><button id="reload" class="tab-reload-btn" title="Atualizar operações" aria-label="Atualizar operações">↻</button></nav>${rows.map(o=>o.status==='ABERTA'?`<button class="op" data-op="${esc(o.id)}"><div><span class="green">● Em andamento</span><strong>${esc(o.nome)}</strong><span class="small muted">${esc(o.date)} · Entrar para lançar e conferir pesos</span></div><span class="arrow">→</span></button>`:`<div class="op op-history-card"><div class="op-history-info" data-op="${esc(o.id)}"><strong>${esc(o.nome)}</strong><span class="small muted">Finalizada • No histórico por 48h${o.finalizada_em?' · Finalizada às '+showTime(o.finalizada_em):(o.date?' · '+esc(o.date):'')}</span></div><div class="op-history-actions"><button type="button" class="btn-reopen-op" data-reopen-op="${esc(o.id)}">Reabrir operação</button><button type="button" class="btn-consult-op" data-op="${esc(o.id)}">Consultar →</button></div></div>`).join('')||`<div class="card empty">${historyView?'Nenhuma operação no histórico de 48h.':'Nenhuma operação aberta. Crie a operação do dia para começar.'}</div>`}`);$('#create').onclick=create;$('#tabOpen').onclick=()=>{historyView=false;render()};$('#tabHistory').onclick=()=>{historyView=true;render()};$('#reload').onclick=refresh;document.querySelectorAll('[data-op]').forEach(b=>b.onclick=()=>enterOperation(b.dataset.op));document.querySelectorAll('[data-reopen-op]').forEach(b=>b.onclick=e=>{e.stopPropagation();reopenFromHistory(b.dataset.reopenOp)});return}
+const o=op();if(!o){screen='ops';render();return}const t=sum(o.records),closed=o.status==='FINALIZADA';shell(`<button class="back" id="back">← Todas as operações</button><div class="intro"><div><span class="eyebrow">${esc(o.date)} · ${closed?'OPERAÇÃO FINALIZADA':'OPERAÇÃO EM ANDAMENTO'}</span><h1>${esc(o.nome)}</h1><p>${closed?'Relatório disponível. Reabra para corrigir lançamentos.':'Pesagens reunidas por destino.'}</p></div>${closed?'':`<div class="operation-actions priority-actions">${hasCategories?`<div class="main-types"><button class="primary" id="insertBox" ${!o.loaded?'disabled':''}><svg class="type-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="M3 8v10l9 5 9-5V8M12 13v10M7.5 5.5l9 5v4"/></svg><span>INSERIR CAIXA</span></button><button class="primary" id="insertBag" ${!o.loaded?'disabled':''}><svg class="type-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M8 3h8l-2 4h-4L8 3Z"/><path d="M9 7h6M10 7C9 10 4 13 4 18c0 3 3 4 8 4s8-1 8-4c0-5-5-8-6-11"/><path d="m14 8 3 2M9 16c0-2 1-3 2-4"/></svg><span>INSERIR SACA</span></button></div><div class="other-types-label">OUTROS TIPOS</div><div class="special-types"><button class="secondary" id="insertdg" ${!o.loaded?'disabled':''}>DG</button><button class="secondary" id="insertPallet" ${!o.loaded?'disabled':''}>PALLET</button>${hasDelivery?`<button class="secondary" id="insertDelivery" ${!o.loaded?'disabled':''}>DELIVERY</button>`:''}${hasComail?`<button class="secondary" id="insertComail" ${!o.loaded?'disabled':''}>COMAIL</button>`:''}</div>`:`<button class="primary" id="insert" ${!o.loaded?'disabled':''}>＋ Inserir peso</button><button class="secondary" id="insertdg" ${!o.loaded?'disabled':''}>▣ INSERIR DG</button><button class="secondary" id="insertPallet" ${!o.loaded?'disabled':''}>▣ INSERIR PALLET</button>`}</div>`}</div>${!connected?'<div class="connection-warning">Sem conexão: os valores exibidos podem estar desatualizados.</div>':''}<div class="stats"><div class="card stat"><span>Volumes pesados</span><strong>${t.vol}</strong></div><div class="card stat"><span>Peso total · kg</span><strong>${fmt(t.kg)}</strong></div><div class="card stat"><span>Lançamentos</span><strong>${o.records.length}</strong></div></div>${specialStatsHtml(o)}<div class="toolbar"><button class="secondary" id="export" ${!o.loaded?'disabled':''}>↓ Exportar Excel</button><button class="plain" id="reload">↻ Atualizar</button><button class="${closed?'secondary':'plain'}" id="statusAction">${closed?'Reabrir operação':'Finalizar operação'}</button></div><div class="board-switcher"><div class="board-tabs" role="tablist"><button type="button" class="board-tab ${boardTab==='dest'?'active':''}" id="tabBoardDest">Totais por destino (${grouped(o.records).length})</button><button type="button" class="board-tab ${boardTab==='recent'?'active':''}" id="tabBoardRecent">Últimos lançamentos (${o.records.length})</button></div><div class="swipe-hint">← Deslize para o lado para alternar entre as listas →</div></div><div class="grid swipe-grid" id="boardGrid"><section class="card board-panel ${boardTab==='dest'?'':'hidden-mobile'}"><div class="sectionhead"><h2>Totais por destino</h2><span class="chip" id="destCountBadge">${grouped(o.records).length} praças · kg</span></div><div class="filter-bar"><input type="search" id="destSummarySearch" class="input filter-search" placeholder="Buscar código ou cidade (ex.: BELA, Manaus)…" autocomplete="off" value="${esc(destSummaryQuery)}"></div><div id="destSummaryListContainer">${renderDestSummaryRows(o)}</div><div class="total"><span>Total geral</span><span>${fmt(t.kg)} kg</span></div></section><section class="card board-panel ${boardTab==='recent'?'':'hidden-mobile'}"><div class="sectionhead"><h2>Últimos lançamentos</h2><span class="small muted" id="recentCountLabel">Mais recentes</span></div><div class="filter-bar"><input type="search" id="recordSearch" class="input filter-search" placeholder="Buscar destino, AWB ou colega…" autocomplete="off" value="${esc(recentQuery)}"><div class="filter-chips">${[['ALL','Todos'],['CAIXA','CAIXA'],['SACA','SACA'],['PALLET','PALLET'],['DG','DG'],['DELIVERY','DELIVERY'],['COMAIL','COMAIL']].map(([k,label])=>`<button type="button" class="filter-chip ${recentFilter===k?'active':''}" data-filter-kind="${k}">${label}</button>`).join('')}</div></div><div id="recentListContainer">${renderRecentRows(o,closed)}</div></section></div>`);
+$('#back').onclick=()=>{screen='ops';active=null;if(recordChannel){realtime.removeChannel(recordChannel);recordChannel=null}render()};$('#reload').onclick=refresh;$('#statusAction').onclick=changeStatus;$('#export').onclick=exportExcel;
 if($('#tabBoardDest'))$('#tabBoardDest').onclick=()=>{boardTab='dest';render()};
 if($('#tabBoardRecent'))$('#tabBoardRecent').onclick=()=>{boardTab='recent';render()};
 if($('#destSummarySearch'))$('#destSummarySearch').oninput=e=>{destSummaryQuery=e.target.value;updateDestSummaryList()};
@@ -435,6 +526,7 @@ document.addEventListener('click',event=>{const button=event.target.closest?.('[
 async function ask(title,message,button='Confirmar'){return new Promise(resolve=>{const layer=modal(`<h2>${esc(title)}</h2><p>${esc(message)}</p><button class="primary wide" id="yes">${esc(button)}</button><button class="plain wide" id="no">Cancelar</button>`);const done=val=>{document.removeEventListener('keydown',onKey);layer.remove();resolve(val)};const onKey=e=>{if(e.key==='Escape')done(false)};document.addEventListener('keydown',onKey);layer.querySelector('#yes').onclick=()=>done(true);layer.querySelector('#no').onclick=()=>done(false)})}
 function addUser(){const layer=modal('<h2>Adicionar usuário</h2><form id="userForm"><label class="field" for="userName" style="margin-top:16px">Nome</label><input class="input" id="userName" required maxlength="60" autocomplete="off"><button class="primary wide" style="margin-top:14px" id="userSave">Cadastrar</button><button type="button" class="plain wide" id="cancelUser">Cancelar</button></form>');const close=()=>{document.removeEventListener('keydown',onKey);layer.remove()};const onKey=e=>{if(e.key==='Escape')close()};document.addEventListener('keydown',onKey);layer.querySelector('#cancelUser').onclick=close;layer.querySelector('#userForm').onsubmit=async e=>{e.preventDefault();const nome=layer.querySelector('#userName').value.trim().toUpperCase();if(!nome)return;const saveBtn=layer.querySelector('#userSave');saveBtn.disabled=true;try{await api('usuarios',{method:'POST',body:{nome}});users=await api('usuarios?select=*&ativo=eq.true&order=nome');close();render()}catch(error){saveBtn.disabled=false;toast(errorMessage(error))}}}
 function create(){if(state.ops.some(o=>o.status==='ABERTA'))return;const localDate=new Intl.DateTimeFormat('pt-BR',{timeZone:'America/Sao_Paulo'}).format(new Date());const layer=modal(`<h2>Nova operação</h2><form id="newop"><label class="field" for="opname" style="margin-top:16px">Nome da operação</label><input id="opname" class="input" required maxlength="100" value="Operação ${esc(localDate)}"><p class="small">A data será mantida no fuso de Brasília mesmo após as 21h / meia-noite UTC.</p><button class="primary wide" id="createSave">Criar e entrar →</button><button type="button" class="plain wide" id="cancel">Cancelar</button></form>`);const id=crypto.randomUUID();const close=()=>{document.removeEventListener('keydown',onKey);layer.remove()};const onKey=e=>{if(e.key==='Escape')close()};document.addEventListener('keydown',onKey);layer.querySelector('#cancel').onclick=close;layer.querySelector('#newop').onsubmit=async e=>{e.preventDefault();const nome=layer.querySelector('#opname').value.trim();if(!nome)return;const mDate=nome.match(/(\d{2})\/(\d{2})\/(\d{4})/);const dataOp=mDate?`${mDate[3]}-${mDate[2]}-${mDate[1]}`:todayIsoBrazil();const saveBtn=layer.querySelector('#createSave');saveBtn.disabled=true;try{try{await api('operacoes?on_conflict=id',{method:'POST',body:{id,nome,data_operacao:dataOp,criada_por:selectedUser},prefer:'resolution=ignore-duplicates,return=representation'})}catch{await api('operacoes?on_conflict=id',{method:'POST',body:{id,nome,criada_por:selectedUser},prefer:'resolution=ignore-duplicates,return=representation'})}await loadOperations();close();enterOperation(id)}catch(error){saveBtn.disabled=false;toast(errorMessage(error));await loadOperations().catch(()=>{})}}}
+async function reopenFromHistory(id){const target=state.ops.find(x=>x.id===id);if(!target)return;if(state.ops.some(x=>x.status==='ABERTA'&&x.id!==id)){toast('Finalize a operação aberta antes de reabrir esta.');return}if(!await ask('Reabrir operação?','A equipe poderá corrigir ou incluir pesagens. Exporte novamente após as alterações.','Reabrir'))return;try{const result=await api(`operacoes?id=eq.${target.id}&atualizada_em=eq.${encodeURIComponent(target.atualizada_em)}`,{method:'PATCH',body:{status:'ABERTA'}});if(!result.length)throw Error('A operação foi alterada em outro aparelho. Atualize e confira.');historyView=false;await refresh();toast('Operação reaberta.');enterOperation(target.id)}catch(e){toast(errorMessage(e));await refresh()}}
 async function changeStatus(){const o=op(),isClosed=o.status==='FINALIZADA';if(isClosed&&state.ops.some(x=>x.status==='ABERTA'&&x.id!==o.id)){toast('Finalize a operação aberta antes de reabrir esta.');return}if(!await ask(isClosed?'Reabrir operação?':'Finalizar operação?',isClosed?'A equipe poderá corrigir ou incluir pesagens. Exporte novamente após as alterações.':'Os lançamentos serão bloqueados. Esta operação será excluída 48 horas após a finalização.',isClosed?'Reabrir':'Finalizar'))return;try{const result=await api(`operacoes?id=eq.${o.id}&atualizada_em=eq.${encodeURIComponent(o.atualizada_em)}`,{method:'PATCH',body:{status:isClosed?'ABERTA':'FINALIZADA'}});if(!result.length)throw Error('A operação foi alterada em outro aparelho. Atualize e confira.');await refresh();toast(isClosed?'Operação reaberta.':'Operação finalizada. Exporte o Excel para guardar o relatório.')}catch(e){toast(errorMessage(e));await refresh()}}
 const CATEGORY_ORDER=['CAIXA','SACA','PALLET','DELIVERY','COMAIL','DG','SEM_CLASSIFICACAO'];
 function recordKind(record){if(record.pallet||record.type==='PALLET'||record.category==='PALLET')return 'PALLET';if(record.dg||record.type==='DG')return 'DG';if(['DELIVERY','COMAIL'].includes(record.type))return record.type;return record.category||'SEM_CLASSIFICACAO'}
