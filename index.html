@@ -361,6 +361,100 @@ let hasCategories=false,hasDelivery=false,hasComail=false,category=null;
 let stage=0,chosen='',num='',draftKgStr='',vol=0,query='',edit=null,dgMode=false,palletMode=false,awb='',allowDuplicatePalletAwb=false,reader=null,cameraEpoch=0,scanning=false,saving=false,draftId=null,editVersion=null;
 const SUITE_BRIDGE_URL='https://megozyczcjpqqozbdqrn.supabase.co';
 const SUITE_BRIDGE_KEY='sb_publishable_76xL9ys9iOhpK7nzNtX5mw_VZD3yKot';
+let globalOperadoresList=['FELIPE','JAQUELINE','KAIO'];
+let globalUsuariosAuthDb={};
+function loadPesosGlobalAuthLocal(){
+  try{
+    const ro=localStorage.getItem('sistema_aereo_operadores_lista_v1');
+    if(ro){const po=JSON.parse(ro);if(Array.isArray(po)&&po.length)globalOperadoresList=Array.from(new Set(po.map(x=>String(x||'').trim().toUpperCase()).filter(Boolean)))}
+  }catch{}
+  try{
+    const ra=localStorage.getItem('sistema_aereo_usuarios_auth_v1');
+    if(ra){const pa=JSON.parse(ra);if(pa&&typeof pa==='object')globalUsuariosAuthDb=pa}
+  }catch{}
+  globalOperadoresList.forEach(op=>{
+    const n=String(op||'').trim().toUpperCase();
+    if(n&&!globalUsuariosAuthDb[n])globalUsuariosAuthDb[n]={nome:n,senha:'',telefone:n==='FELIPE'?'19998975914':'',callmebot_key:''};
+  });
+}
+loadPesosGlobalAuthLocal();
+function savePesosGlobalAuthLocal(){
+  try{
+    localStorage.setItem('sistema_aereo_operadores_lista_v1',JSON.stringify(globalOperadoresList));
+    localStorage.setItem('sistema_aereo_usuarios_auth_v1',JSON.stringify(globalUsuariosAuthDb));
+  }catch{}
+}
+async function syncPesosGlobalAuthFromBridge(){
+  try{
+    const res=await fetch(`https://megozyczcjpqqozbdqrn.supabase.co/rest/v1/minutas?select=dados&id=eq.__SYS_CONFIG__`,{headers:{apikey:SUITE_BRIDGE_KEY,Authorization:`Bearer ${SUITE_BRIDGE_KEY}`}});
+    if(res.ok){
+      const rows=await res.json();
+      if(Array.isArray(rows)&&rows[0]&&rows[0].dados){
+        const d=rows[0].dados;
+        if(Array.isArray(d.operadores)&&d.operadores.length){
+          globalOperadoresList=Array.from(new Set(d.operadores.map(x=>String(x||'').trim().toUpperCase()).filter(Boolean)));
+        }
+        if(d.usuarios_auth&&typeof d.usuarios_auth==='object'){
+          for(const [k,v] of Object.entries(d.usuarios_auth)){
+            const n=String(k||v?.nome||'').trim().toUpperCase();
+            if(!n)continue;
+            const loc=globalUsuariosAuthDb[n]||{};
+            globalUsuariosAuthDb[n]={
+              nome:n,
+              senha:(v&&v.senha!==undefined)?String(v.senha||''):String(loc.senha||''),
+              telefone:(v&&v.telefone!==undefined&&String(v.telefone).trim()!=='')?String(v.telefone).replace(/\D/g,''):String(loc.telefone||(n==='FELIPE'?'19998975914':'')),
+              callmebot_key:(v&&v.callmebot_key!==undefined&&String(v.callmebot_key).trim()!=='')?String(v.callmebot_key).trim():String(loc.callmebot_key||''),
+              atualizado_em:v?.atualizado_em||loc.atualizado_em||Date.now()
+            };
+            if(!globalOperadoresList.includes(n)&&!v?.excluido)globalOperadoresList.push(n);
+          }
+        }
+        savePesosGlobalAuthLocal();
+      }
+    }
+  }catch{}
+}
+async function pushPesosGlobalAuthToBridge(){
+  savePesosGlobalAuthLocal();
+  try{
+    await fetch(`https://megozyczcjpqqozbdqrn.supabase.co/rest/v1/minutas?on_conflict=id`,{
+      method:'POST',
+      headers:{apikey:SUITE_BRIDGE_KEY,Authorization:`Bearer ${SUITE_BRIDGE_KEY}`,'Content-Type':'application/json',Prefer:'resolution=merge-duplicates,return=minimal'},
+      body:JSON.stringify([{
+        id:'__SYS_CONFIG__',
+        destino:'SYS',
+        cia:'SYS',
+        operador:state.name||'PESOS',
+        status:'ATIVA',
+        operacao:'SYS',
+        dados:{operadores:globalOperadoresList,usuarios_auth:globalUsuariosAuthDb,atualizado_em:Date.now()}
+      }])
+    });
+  }catch{}
+}
+function mergePesosUsersWithGlobal(dbUsers){
+  const list=Array.isArray(dbUsers)?[...dbUsers]:[];
+  const byName=new Map(list.map(u=>[String(u.nome||'').trim().toUpperCase(),u]));
+  for(const opName of globalOperadoresList){
+    const n=String(opName||'').trim().toUpperCase();
+    if(n&&!byName.has(n)){
+      const synth={id:'usr_'+n.toLowerCase(),nome:n,ativo:true};
+      list.push(synth);
+      byName.set(n,synth);
+    }
+  }
+  return list;
+}
+function hasAuthenticatedPesosSession(userName){
+  const n=String(userName||'').trim().toUpperCase();
+  if(!n)return false;
+  const uAuth=globalUsuariosAuthDb[n];
+  if(!uAuth||!String(uAuth.senha||'').trim())return false;
+  try{
+    const s=JSON.parse(localStorage.getItem('sistema_aereo_sessao_autenticada_v1')||'null');
+    return Boolean(s&&String(s.nome||'').toUpperCase()===n);
+  }catch{return false}
+}
 let palletMetaByOp={};
 async function fetchPalletMetaForOp(opId){
   if(!opId)return {};
@@ -432,7 +526,7 @@ async function refresh(){try{if(!hasCategories)await detectCategories();if(!hasD
 function scheduleRefresh(){clearTimeout(refreshTimer);refreshTimer=setTimeout(refresh,350)}
 function watchRecords(id){if(!realtime)return;if(recordChannel)realtime.removeChannel(recordChannel);live=false;recordChannel=realtime.channel('pesagens-'+id).on('postgres_changes',{event:'*',schema:'public',table:'pesagens',filter:'operacao_id=eq.'+id},scheduleRefresh).subscribe(status=>{live=status==='SUBSCRIBED';if(!isFlow())safeRender()})}
 function setupRealtime(){if(!window.supabase)return;realtime=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY,{auth:{persistSession:false,autoRefreshToken:false,detectSessionInUrl:false}});realtime.channel('operacoes-equipe').on('postgres_changes',{event:'*',schema:'public',table:'operacoes'},scheduleRefresh).subscribe(s=>{opsLive=s==='SUBSCRIBED'});realtime.channel('usuarios-equipe').on('postgres_changes',{event:'*',schema:'public',table:'usuarios'},async()=>{try{users=await api('usuarios?select=*&ativo=eq.true&order=nome');safeRender()}catch{}}).subscribe();}
-async function boot(){render();try{const [u,d]=await Promise.all([api('usuarios?select=*&ativo=eq.true&order=nome'),api('destinos?select=*&ativo=eq.true&order=codigo'),detectCategories(),detectDelivery(),detectComail()]);users=u;destinations=d.map(r=>[r.codigo,cityNames[r.codigo]||r.codigo]);await loadOperations();const user=users.find(u=>u.id===selectedUser);if(user){state.name=user.nome;screen='ops'}else selectedUser=null;connected=true;loading=false;setupRealtime();render()}catch(e){connected=false;loading=false;render();toast(errorMessage(e))}}
+async function boot(){render();try{const [u,d]=await Promise.all([api('usuarios?select=*&ativo=eq.true&order=nome'),api('destinos?select=*&ativo=eq.true&order=codigo'),detectCategories(),detectDelivery(),detectComail(),syncPesosGlobalAuthFromBridge()]);users=mergePesosUsersWithGlobal(u);destinations=d.map(r=>[r.codigo,cityNames[r.codigo]||r.codigo]);await loadOperations();const savedGlobalName=(localStorage.getItem('sistema_aereo_usuario')||'').trim().toUpperCase();let user=users.find(u=>u.id===selectedUser)||(savedGlobalName?users.find(u=>String(u.nome||'').toUpperCase()===savedGlobalName):null);if(user&&hasAuthenticatedPesosSession(user.nome)){selectedUser=user.id;state.name=user.nome;screen='ops'}else{selectedUser=null;state.name='';screen='login'}connected=true;loading=false;setupRealtime();render()}catch(e){connected=false;loading=false;render();toast(errorMessage(e))}}
 function brand(){
   return `<div class="suite-brand" id="brandHome" title="Voltar para Operações">
     <div class="suite-logo-box">
@@ -483,10 +577,161 @@ function shell(content){
   <div class="shell">${content}</div>`;
   if($('#brandHome'))$('#brandHome').onclick=()=>{if(state.name){active=null;screen='ops';render()}};
   if($('#toggleTheme'))$('#toggleTheme').onclick=toggleTheme;
-  if($('#switchUser'))$('#switchUser').onclick=()=>{selectedUser=null;state.name='';try{localStorage.removeItem('peso-equipe-user')}catch{}screen='login';render()};
+  if($('#switchUser'))$('#switchUser').onclick=()=>{selectedUser=null;state.name='';try{localStorage.removeItem('peso-equipe-user');localStorage.removeItem('sistema_aereo_usuario');localStorage.removeItem('sistema_aereo_sessao_autenticada_v1')}catch{}screen='login';render()};
+}
+function openPesosAuthModal(userId){
+  const uObj=users.find(x=>x.id===userId);
+  if(!uObj)return;
+  const nomeUp=String(uObj.nome||'').trim().toUpperCase();
+  syncPesosGlobalAuthFromBridge().then(()=>{
+    const uAuth=globalUsuariosAuthDb[nomeUp]||{nome:nomeUp,senha:'',telefone:'',callmebot_key:''};
+    const temSenha=Boolean(uAuth.senha&&String(uAuth.senha).trim().length>0);
+    const layer=modal(`
+      <div style="display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);padding-bottom:12px;margin-bottom:14px">
+        <div style="display:flex;align-items:center;gap:12px">
+          <span class="avatar" style="width:42px;height:42px;border-radius:999px;background:rgba(16,185,129,.15);color:#10b981;display:inline-flex;align-items:center;justify-content:center;font-weight:800;font-size:13px">${esc(nomeUp.slice(0,2))}</span>
+          <div>
+            <span id="gpAuthEyebrow" class="eyebrow" style="margin:0;font-size:10px">${temSenha?'SENHA DE ACESSO':'PRIMEIRO ACESSO — CRIAR SENHA'}</span>
+            <h2 style="margin:2px 0 0;font-size:18px">${esc(nomeUp)}</h2>
+          </div>
+        </div>
+        <button type="button" class="plain" id="gpAuthClose" aria-label="Fechar">✕</button>
+      </div>
+      <div id="gpAuthBody"></div>
+    `);
+    const close=()=>layer.remove();
+    layer.querySelector('#gpAuthClose').onclick=close;
+    const body=layer.querySelector('#gpAuthBody');
+
+    const finishLogin=()=>{
+      selectedUser=uObj.id;
+      state.name=uObj.nome;
+      try{
+        localStorage.setItem('peso-equipe-user',selectedUser);
+        localStorage.setItem('sistema_aereo_usuario',nomeUp);
+        localStorage.setItem('sistema_aereo_sessao_autenticada_v1',JSON.stringify({nome:nomeUp,ts:Date.now()}));
+      }catch{}
+      close();
+      screen='ops';
+      render();
+    };
+
+    const maskTel=(telDigits)=>{
+      let d=String(telDigits||'').replace(/\D/g,'');
+      if(d.startsWith('55')&&d.length>=12)d=d.slice(2);
+      if(d.length<4)return '(••) •••••-••••';
+      const ddd=d.length>=10?d.slice(0,2):'••';
+      const pref=d.length>=10?d.slice(2,4):'••';
+      return `(${ddd}) ${pref}•••-••••`;
+    };
+
+    const renderFirstAccessStep=()=>{
+      layer.querySelector('#gpAuthEyebrow').textContent='PRIMEIRO ACESSO — CRIAR SENHA';
+      body.innerHTML=`
+        <p class="small" style="margin-top:0;padding:10px 12px;border-radius:12px;background:rgba(16,185,129,.1);color:var(--text)">
+          <strong>👋 Bem-vindo ao seu 1º Acesso!</strong> Cadastre abaixo sua senha global. Ela funcionará automaticamente nos 3 sistemas.
+        </p>
+        <div id="gpAuthMsg" style="display:none;padding:10px 12px;border-radius:10px;font-size:12px;font-weight:700;margin-bottom:10px"></div>
+        <label class="field" style="margin-top:10px">Criar Senha</label>
+        <input type="password" id="gpNewPass" class="input" placeholder="Mín. 3 caracteres">
+        <label class="field" style="margin-top:10px">Confirmar Senha</label>
+        <input type="password" id="gpConfPass" class="input" placeholder="Repita a senha">
+        <label class="field" style="margin-top:10px">Seu WhatsApp com DDD (para recuperar senha)</label>
+        <input type="tel" id="gpPhone" class="input" placeholder="Ex: 19998975914" value="${esc(uAuth.telefone||'')}">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-top:10px">
+          <label class="field" style="margin:0">Chave CallMeBot (Opcional)</label>
+          <a href="https://wa.me/34644519523?text=I%20allow%20callmebot%20to%20send%20me%20messages" target="_blank" rel="noopener noreferrer" style="font-size:11px;font-weight:800;color:#10b981;text-decoration:none">📲 Gerar no WhatsApp ↗</a>
+        </div>
+        <input type="text" id="gpApiKey" class="input" placeholder="Código de 6 dígitos enviado pelo robô" value="${esc(uAuth.callmebot_key||'')}">
+        <button type="button" class="primary wide" style="margin-top:14px" id="gpSaveFirst">Salvar Senha e Entrar →</button>
+        <button type="button" class="plain wide" id="gpCancelFirst">Cancelar</button>
+      `;
+      body.querySelector('#gpCancelFirst').onclick=close;
+      const submitFirst=async()=>{
+        const s1=(body.querySelector('#gpNewPass').value||'').trim();
+        const s2=(body.querySelector('#gpConfPass').value||'').trim();
+        const tel=(body.querySelector('#gpPhone').value||'').replace(/\D/g,'');
+        const ak=(body.querySelector('#gpApiKey').value||'').trim();
+        const msgEl=body.querySelector('#gpAuthMsg');
+        const showErr=t=>{msgEl.textContent=t;msgEl.style.display='block';msgEl.style.background='rgba(239,68,68,.15)';msgEl.style.color='#ef4444'};
+        if(s1.length<3)return showErr('A senha precisa ter pelo menos 3 caracteres.');
+        if(s1!==s2)return showErr('A confirmação da senha não confere.');
+        if(tel&&tel.length<10)return showErr('Informe o WhatsApp com DDD (ex: 19998975914).');
+        globalUsuariosAuthDb[nomeUp]={nome:nomeUp,senha:s1,telefone:tel||uAuth.telefone||'',callmebot_key:ak||uAuth.callmebot_key||'',atualizado_em:Date.now()};
+        await pushPesosGlobalAuthToBridge();
+        toast('Senha global cadastrada!');
+        finishLogin();
+      };
+      body.querySelector('#gpSaveFirst').onclick=submitFirst;
+      body.querySelector('#gpConfPass').onkeydown=e=>{if(e.key==='Enter')submitFirst()};
+      setTimeout(()=>body.querySelector('#gpNewPass')?.focus(),50);
+    };
+
+    const renderLoginPassStep=(successBanner='')=>{
+      layer.querySelector('#gpAuthEyebrow').textContent='SENHA DE ACESSO';
+      const curAuth=globalUsuariosAuthDb[nomeUp]||uAuth;
+      body.innerHTML=`
+        <div id="gpAuthMsg" style="display:${successBanner?'block':'none'};padding:10px 12px;border-radius:10px;font-size:12px;font-weight:700;margin-bottom:10px;background:rgba(16,185,129,.15);color:#10b981">${esc(successBanner)}</div>
+        <label class="field" style="margin-top:4px">Digite sua senha de acesso</label>
+        <input type="password" id="gpLoginPass" class="input" placeholder="••••••••">
+        <button type="button" class="primary wide" style="margin-top:14px" id="gpBtnLogin">Entrar no Sistema →</button>
+        <button type="button" class="plain wide" style="margin-top:6px;color:#10b981;font-weight:700" id="gpBtnForgot">Esqueci a senha (Receber no WhatsApp)</button>
+      `;
+      const doLogin=()=>{
+        const dig=(body.querySelector('#gpLoginPass').value||'').trim();
+        const msgEl=body.querySelector('#gpAuthMsg');
+        const showErr=t=>{msgEl.textContent=t;msgEl.style.display='block';msgEl.style.background='rgba(239,68,68,.15)';msgEl.style.color='#ef4444'};
+        if(!dig)return showErr('Digite sua senha para entrar.');
+        if(String(curAuth.senha||'').trim()!==dig)return showErr('Senha incorreta. Tente novamente ou clique em Esqueci a senha.');
+        finishLogin();
+      };
+      body.querySelector('#gpBtnLogin').onclick=doLogin;
+      body.querySelector('#gpLoginPass').onkeydown=e=>{if(e.key==='Enter')doLogin()};
+      body.querySelector('#gpBtnForgot').onclick=()=>renderForgotStep();
+      setTimeout(()=>body.querySelector('#gpLoginPass')?.focus(),50);
+    };
+
+    const renderForgotStep=()=>{
+      layer.querySelector('#gpAuthEyebrow').textContent='RECUPERAR SENHA NO WHATSAPP';
+      const curAuth=globalUsuariosAuthDb[nomeUp]||uAuth;
+      body.innerHTML=`
+        <p class="small" style="margin-top:0;padding:10px 12px;border-radius:12px;background:rgba(16,185,129,.1);color:var(--text)">
+          Confirme abaixo os <strong>4 últimos números</strong> do seu telefone cadastrado (<strong>${esc(maskTel(curAuth.telefone))}</strong>) para receber sua senha no WhatsApp:
+        </p>
+        <div id="gpAuthMsg" style="display:none;padding:10px 12px;border-radius:10px;font-size:12px;font-weight:700;margin-bottom:10px"></div>
+        <label class="field" style="margin-top:8px">Últimos 4 números do seu telefone</label>
+        <input type="text" id="gpLast4" maxlength="4" inputmode="numeric" class="input" placeholder="0000" style="text-align:center;letter-spacing:.35em;font-weight:800;font-size:18px">
+        <button type="button" class="primary wide" style="margin-top:14px" id="gpSendWhats">📲 Enviar Senha para o WhatsApp</button>
+        <button type="button" class="plain wide" id="gpBackLogin">← Voltar para a tela de senha</button>
+      `;
+      body.querySelector('#gpBackLogin').onclick=()=>renderLoginPassStep('');
+      const doSend=()=>{
+        const telLimpo=String(curAuth.telefone||'').replace(/\D/g,'');
+        const ult4=(body.querySelector('#gpLast4').value||'').replace(/\D/g,'');
+        const msgEl=body.querySelector('#gpAuthMsg');
+        const showErr=t=>{msgEl.textContent=t;msgEl.style.display='block';msgEl.style.background='rgba(239,68,68,.15)';msgEl.style.color='#ef4444'};
+        if(!telLimpo||telLimpo.length<4)return showErr('Este usuário ainda não possui telefone cadastrado na aba Usuários.');
+        if(ult4.length!==4)return showErr('Digite exatamente os 4 últimos números do seu telefone.');
+        if(telLimpo.slice(-4)!==ult4)return showErr('Os 4 últimos números não conferem com o telefone cadastrado.');
+        if(!curAuth.callmebot_key||!String(curAuth.callmebot_key).trim())return showErr('A chave CallMeBot ainda não foi vinculada a este telefone na aba Usuários.');
+        let p55=telLimpo.replace(/^0+/,'');
+        if(!p55.startsWith('55')&&(p55.length===10||p55.length===11))p55='55'+p55;
+        const txt=`🔐 *Sistema Aéreo FedEx* — Olá ${nomeUp}, sua senha global de acesso aos 3 sistemas é: *${curAuth.senha}*`;
+        const url=`https://api.callmebot.com/whatsapp.php?phone=${encodeURIComponent(p55)}&text=${encodeURIComponent(txt)}&apikey=${encodeURIComponent(String(curAuth.callmebot_key).trim())}`;
+        try{fetch(url,{mode:'no-cors',cache:'no-store'}).catch(()=>{})}catch{}
+        renderLoginPassStep('✅ Senha enviada para o seu WhatsApp! Digite-a abaixo para entrar.');
+      };
+      body.querySelector('#gpSendWhats').onclick=doSend;
+      body.querySelector('#gpLast4').onkeydown=e=>{if(e.key==='Enter')doSend()};
+      setTimeout(()=>body.querySelector('#gpLast4')?.focus(),50);
+    };
+
+    if(!temSenha)renderFirstAccessStep();
+    else renderLoginPassStep('');
+  });
 }
 function render(){if(stage){wizard();return}if(scanning)return;if(loading){shell('<div class="empty">Conectando à operação da equipe…</div>');return}if(!connected&&!users.length){shell('<section class="login card"><h1>Vamos conectar?</h1><p>Não foi possível acessar o banco neste painel restrito. Confira sua conexão ou abra a demonstração para testar o histórico por destino.</p><button id="retry" class="primary wide">Tentar novamente</button><button id="demoBtn" class="secondary wide" style="margin-top:10px">Testar prévia com dados de exemplo →</button></section>');$('#retry').onclick=()=>{loading=true;boot()};$('#demoBtn').onclick=loadDemoMode;return}
-if(screen==='login'){shell(`<section class="login"><span class="eyebrow">ACESSO AO SISTEMA</span><h1>Quem está pesando?</h1><p>Selecione seu nome para identificar os lançamentos.</p><div class="card user-list">${users.map(u=>`<button class="user-option" data-user="${esc(u.id)}"><span class="avatar">${esc(u.nome.slice(0,2))}</span><b>${esc(u.nome)}</b><span class="arrow">→</span></button>`).join('')}<button class="secondary wide" id="addUser">＋ Adicionar usuário</button></div></section>`);document.querySelectorAll('[data-user]').forEach(b=>b.onclick=()=>{selectedUser=b.dataset.user;state.name=users.find(u=>u.id===selectedUser).nome;try{localStorage.setItem('peso-equipe-user',selectedUser)}catch{}screen='ops';render()});$('#addUser').onclick=addUser;return}
+if(screen==='login'){loadPesosGlobalAuthLocal();users=mergePesosUsersWithGlobal(users);shell(`<section class="login"><span class="eyebrow">ACESSO AO SISTEMA</span><h1>Quem está pesando?</h1><p>Selecione seu nome para identificar os lançamentos.</p><div class="card user-list">${users.map(u=>{const nUp=String(u.nome||'').trim().toUpperCase();const hasP=Boolean(globalUsuariosAuthDb[nUp]?.senha&&String(globalUsuariosAuthDb[nUp].senha).trim().length>0);return `<button class="user-option" data-user="${esc(u.id)}"><span class="avatar">${esc(u.nome.slice(0,2))}</span><span style="display:flex;flex-direction:column;gap:2px"><b>${esc(u.nome)}</b><small style="font-size:10px;font-weight:700;color:${hasP?'var(--muted)':'#f59e0b'}">${hasP?'Com senha':'1º Acesso'}</small></span><span class="arrow">→</span></button>`}).join('')}</div></section>`);document.querySelectorAll('[data-user]').forEach(b=>b.onclick=()=>openPesosAuthModal(b.dataset.user));return}
 if(screen==='ops'){const open=state.ops.filter(o=>o.status==='ABERTA'),closed=state.ops.filter(o=>o.status==='FINALIZADA'),rows=historyView?closed:open;shell(`<div class="intro"><div><span class="eyebrow">SEU ESPAÇO DE TRABALHO</span><h1>Olá, ${esc(state.name)}.</h1><p>${historyView?'Operações finalizadas nas últimas 48 horas.':'Uma equipe. Uma operação. Todos os pesos.'}</p></div><button class="primary" id="create" ${open.length?'disabled':''}>＋ Criar operação</button></div><nav class="tabs"><button id="tabOpen" class="${!historyView?'active':''}">Em andamento (${open.length})</button><button id="tabHistory" class="${historyView?'active':''}">Histórico 48h (${closed.length})</button><button id="reload" class="tab-reload-btn" title="Atualizar operações" aria-label="Atualizar operações">↻</button></nav>${rows.map(o=>o.status==='ABERTA'?`<button class="op" data-op="${esc(o.id)}"><div><span class="green">● Em andamento</span><strong>${esc(o.nome)}</strong><span class="small muted">${esc(o.date)} · Entrar para lançar e conferir pesos</span></div><span class="arrow">→</span></button>`:`<div class="op op-history-card"><div class="op-history-info" data-op="${esc(o.id)}"><strong>${esc(o.nome)}</strong><span class="small muted">Finalizada • No histórico por 48h${o.finalizada_em?' · Finalizada às '+showTime(o.finalizada_em):(o.date?' · '+esc(o.date):'')}</span></div><div class="op-history-actions"><button type="button" class="btn-reopen-op" data-reopen-op="${esc(o.id)}">Reabrir operação</button><button type="button" class="btn-consult-op" data-op="${esc(o.id)}">Consultar →</button></div></div>`).join('')||`<div class="card empty">${historyView?'Nenhuma operação no histórico de 48h.':'Nenhuma operação aberta. Crie a operação do dia para começar.'}</div>`}`);$('#create').onclick=create;$('#tabOpen').onclick=()=>{historyView=false;render()};$('#tabHistory').onclick=()=>{historyView=true;render()};$('#reload').onclick=refresh;document.querySelectorAll('[data-op]').forEach(b=>b.onclick=()=>enterOperation(b.dataset.op));document.querySelectorAll('[data-reopen-op]').forEach(b=>b.onclick=e=>{e.stopPropagation();reopenFromHistory(b.dataset.reopenOp)});return}
 const o=op();if(!o){screen='ops';render();return}const t=sum(o.records),closed=o.status==='FINALIZADA';shell(`<button class="back" id="back">← Todas as operações</button><div class="intro"><div><span class="eyebrow">${esc(o.date)} · ${closed?'OPERAÇÃO FINALIZADA':'OPERAÇÃO EM ANDAMENTO'}</span><h1>${esc(o.nome)}</h1><p>${closed?'Relatório disponível. Reabra para corrigir lançamentos.':'Pesagens reunidas por destino.'}</p></div>${closed?'':`<div class="operation-actions priority-actions">${hasCategories?`<div class="main-types"><button class="primary" id="insertBox" ${!o.loaded?'disabled':''}><svg class="type-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="M3 8v10l9 5 9-5V8M12 13v10M7.5 5.5l9 5v4"/></svg><span>INSERIR CAIXA</span></button><button class="primary" id="insertBag" ${!o.loaded?'disabled':''}><svg class="type-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M8 3h8l-2 4h-4L8 3Z"/><path d="M9 7h6M10 7C9 10 4 13 4 18c0 3 3 4 8 4s8-1 8-4c0-5-5-8-6-11"/><path d="m14 8 3 2M9 16c0-2 1-3 2-4"/></svg><span>INSERIR SACA</span></button></div><div class="other-types-label">OUTROS TIPOS</div><div class="special-types"><button class="secondary" id="insertdg" ${!o.loaded?'disabled':''}>DG</button><button class="secondary" id="insertPallet" ${!o.loaded?'disabled':''}>PALLET</button>${hasDelivery?`<button class="secondary" id="insertDelivery" ${!o.loaded?'disabled':''}>DELIVERY</button>`:''}${hasComail?`<button class="secondary" id="insertComail" ${!o.loaded?'disabled':''}>COMAIL</button>`:''}</div>`:`<button class="primary" id="insert" ${!o.loaded?'disabled':''}>＋ Inserir peso</button><button class="secondary" id="insertdg" ${!o.loaded?'disabled':''}>▣ INSERIR DG</button><button class="secondary" id="insertPallet" ${!o.loaded?'disabled':''}>▣ INSERIR PALLET</button>`}</div>`}</div>${!connected?'<div class="connection-warning">Sem conexão: os valores exibidos podem estar desatualizados.</div>':''}<div class="stats"><div class="card stat"><span>Volumes pesados</span><strong>${t.vol}</strong></div><div class="card stat"><span>Peso total · kg</span><strong>${fmt(t.kg)}</strong></div><div class="card stat"><span>Lançamentos</span><strong>${o.records.length}</strong></div></div>${specialStatsHtml(o)}<div class="toolbar"><button class="secondary" id="export" ${!o.loaded?'disabled':''}>↓ Exportar Excel</button><button class="plain" id="reload">↻ Atualizar</button><button class="${closed?'secondary':'plain'}" id="statusAction">${closed?'Reabrir operação':'Finalizar operação'}</button></div><div class="board-switcher"><div class="board-tabs" role="tablist"><button type="button" class="board-tab ${boardTab==='dest'?'active':''}" id="tabBoardDest">Totais por destino (${grouped(o.records).length})</button><button type="button" class="board-tab ${boardTab==='recent'?'active':''}" id="tabBoardRecent">Últimos lançamentos (${o.records.length})</button></div><div class="swipe-hint">← Deslize para o lado para alternar entre as listas →</div></div><div class="grid swipe-grid" id="boardGrid"><section class="card board-panel ${boardTab==='dest'?'':'hidden-mobile'}"><div class="sectionhead"><h2>Totais por destino</h2><span class="chip" id="destCountBadge">${grouped(o.records).length} praças · kg</span></div><div class="filter-bar"><input type="search" id="destSummarySearch" class="input filter-search" placeholder="Buscar código ou cidade (ex.: BELA, Manaus)…" autocomplete="off" value="${esc(destSummaryQuery)}"></div><div id="destSummaryListContainer">${renderDestSummaryRows(o)}</div><div class="total"><span>Total geral</span><span>${fmt(t.kg)} kg</span></div></section><section class="card board-panel ${boardTab==='recent'?'':'hidden-mobile'}"><div class="sectionhead"><h2>Últimos lançamentos</h2><span class="small muted" id="recentCountLabel">Mais recentes</span></div><div class="filter-bar"><input type="search" id="recordSearch" class="input filter-search" placeholder="Buscar destino, AWB ou colega…" autocomplete="off" value="${esc(recentQuery)}"><div class="filter-chips">${[['ALL','Todos'],['CAIXA','CAIXA'],['SACA','SACA'],['PALLET','PALLET'],['DG','DG'],['DELIVERY','DELIVERY'],['COMAIL','COMAIL']].map(([k,label])=>`<button type="button" class="filter-chip ${recentFilter===k?'active':''}" data-filter-kind="${k}">${label}</button>`).join('')}</div></div><div id="recentListContainer">${renderRecentRows(o,closed)}</div></section></div>`);
 $('#back').onclick=()=>{screen='ops';active=null;if(recordChannel){realtime.removeChannel(recordChannel);recordChannel=null}render()};$('#reload').onclick=refresh;$('#statusAction').onclick=changeStatus;$('#export').onclick=exportExcel;
