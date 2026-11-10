@@ -361,6 +361,7 @@ let hasCategories=false,hasDelivery=false,hasComail=false,category=null;
 let stage=0,chosen='',num='',draftKgStr='',vol=0,query='',edit=null,dgMode=false,palletMode=false,awb='',allowDuplicatePalletAwb=false,reader=null,cameraEpoch=0,scanning=false,saving=false,draftId=null,editVersion=null;
 const SUITE_BRIDGE_URL='https://megozyczcjpqqozbdqrn.supabase.co';
 const SUITE_BRIDGE_KEY='sb_publishable_76xL9ys9iOhpK7nzNtX5mw_VZD3yKot';
+const GP_DEFAULT_FEDEX_EMAILS={'FELIPE':'felipebarros@fedex.com','JAQUELINE':'jaqueline.borges@fedex.com','KAIO':'josesilva3@fedex.com'};
 let globalOperadoresList=['FELIPE','JAQUELINE','KAIO'];
 let globalUsuariosAuthDb={};
 function loadPesosGlobalAuthLocal(){
@@ -374,7 +375,9 @@ function loadPesosGlobalAuthLocal(){
   }catch{}
   globalOperadoresList.forEach(op=>{
     const n=String(op||'').trim().toUpperCase();
-    if(n&&!globalUsuariosAuthDb[n])globalUsuariosAuthDb[n]={nome:n,senha:'',telefone:n==='FELIPE'?'19998975914':'',callmebot_key:''};
+    const defEm=GP_DEFAULT_FEDEX_EMAILS[n]||'';
+    if(n&&!globalUsuariosAuthDb[n])globalUsuariosAuthDb[n]={nome:n,senha:'',email:defEm};
+    else if(n&&!globalUsuariosAuthDb[n].email&&defEm)globalUsuariosAuthDb[n].email=defEm;
   });
 }
 loadPesosGlobalAuthLocal();
@@ -386,7 +389,7 @@ function savePesosGlobalAuthLocal(){
 }
 async function syncPesosGlobalAuthFromBridge(){
   try{
-    const res=await fetch(`https://megozyczcjpqqozbdqrn.supabase.co/rest/v1/minutas?select=dados&id=eq.__SYS_CONFIG__`,{headers:{apikey:SUITE_BRIDGE_KEY,Authorization:`Bearer ${SUITE_BRIDGE_KEY}`}});
+    const res=await fetch('https://megozyczcjpqqozbdqrn.supabase.co/rest/v1/minutas?select=dados&id=eq.__SYS_CONFIG__',{headers:{apikey:SUITE_BRIDGE_KEY,Authorization:`Bearer ${SUITE_BRIDGE_KEY}`}});
     if(res.ok){
       const rows=await res.json();
       if(Array.isArray(rows)&&rows[0]&&rows[0].dados){
@@ -399,11 +402,11 @@ async function syncPesosGlobalAuthFromBridge(){
             const n=String(k||v?.nome||'').trim().toUpperCase();
             if(!n)continue;
             const loc=globalUsuariosAuthDb[n]||{};
+            const defEm=GP_DEFAULT_FEDEX_EMAILS[n]||'';
             globalUsuariosAuthDb[n]={
               nome:n,
               senha:(v&&v.senha!==undefined)?String(v.senha||''):String(loc.senha||''),
-              telefone:(v&&v.telefone!==undefined&&String(v.telefone).trim()!=='')?String(v.telefone).replace(/\D/g,''):String(loc.telefone||(n==='FELIPE'?'19998975914':'')),
-              callmebot_key:(v&&v.callmebot_key!==undefined&&String(v.callmebot_key).trim()!=='')?String(v.callmebot_key).trim():String(loc.callmebot_key||''),
+              email:(v&&v.email&&String(v.email).trim()!=='')?String(v.email).trim().toLowerCase():String(loc.email||defEm),
               atualizado_em:v?.atualizado_em||loc.atualizado_em||Date.now()
             };
             if(!globalOperadoresList.includes(n)&&!v?.excluido)globalOperadoresList.push(n);
@@ -417,7 +420,7 @@ async function syncPesosGlobalAuthFromBridge(){
 async function pushPesosGlobalAuthToBridge(){
   savePesosGlobalAuthLocal();
   try{
-    await fetch(`https://megozyczcjpqqozbdqrn.supabase.co/rest/v1/minutas?on_conflict=id`,{
+    await fetch('https://megozyczcjpqqozbdqrn.supabase.co/rest/v1/minutas?on_conflict=id',{
       method:'POST',
       headers:{apikey:SUITE_BRIDGE_KEY,Authorization:`Bearer ${SUITE_BRIDGE_KEY}`,'Content-Type':'application/json',Prefer:'resolution=merge-duplicates,return=minimal'},
       body:JSON.stringify([{
@@ -583,8 +586,10 @@ function openPesosAuthModal(userId){
   const uObj=users.find(x=>x.id===userId);
   if(!uObj)return;
   const nomeUp=String(uObj.nome||'').trim().toUpperCase();
+  const defEm=GP_DEFAULT_FEDEX_EMAILS[nomeUp]||'';
   syncPesosGlobalAuthFromBridge().then(()=>{
-    const uAuth=globalUsuariosAuthDb[nomeUp]||{nome:nomeUp,senha:'',telefone:'',callmebot_key:''};
+    const uAuth=globalUsuariosAuthDb[nomeUp]||{nome:nomeUp,senha:'',email:defEm};
+    if(!uAuth.email&&defEm)uAuth.email=defEm;
     const temSenha=Boolean(uAuth.senha&&String(uAuth.senha).trim().length>0);
     const layer=modal(`
       <div style="display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);padding-bottom:12px;margin-bottom:14px">
@@ -616,15 +621,6 @@ function openPesosAuthModal(userId){
       render();
     };
 
-    const maskTel=(telDigits)=>{
-      let d=String(telDigits||'').replace(/\D/g,'');
-      if(d.startsWith('55')&&d.length>=12)d=d.slice(2);
-      if(d.length<4)return '(••) •••••-••••';
-      const ddd=d.length>=10?d.slice(0,2):'••';
-      const pref=d.length>=10?d.slice(2,4):'••';
-      return `(${ddd}) ${pref}•••-••••`;
-    };
-
     const renderFirstAccessStep=()=>{
       layer.querySelector('#gpAuthEyebrow').textContent='PRIMEIRO ACESSO — CRIAR SENHA';
       body.innerHTML=`
@@ -636,13 +632,8 @@ function openPesosAuthModal(userId){
         <input type="password" id="gpNewPass" class="input" placeholder="Mín. 3 caracteres">
         <label class="field" style="margin-top:10px">Confirmar Senha</label>
         <input type="password" id="gpConfPass" class="input" placeholder="Repita a senha">
-        <label class="field" style="margin-top:10px">Seu WhatsApp com DDD (para recuperar senha)</label>
-        <input type="tel" id="gpPhone" class="input" placeholder="Ex: 19998975914" value="${esc(uAuth.telefone||'')}">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-top:10px">
-          <label class="field" style="margin:0">Chave CallMeBot (Opcional)</label>
-          <a href="https://wa.me/34644519523?text=I%20allow%20callmebot%20to%20send%20me%20messages" target="_blank" rel="noopener noreferrer" style="font-size:11px;font-weight:800;color:#10b981;text-decoration:none">📲 Gerar no WhatsApp ↗</a>
-        </div>
-        <input type="text" id="gpApiKey" class="input" placeholder="Código de 6 dígitos enviado pelo robô" value="${esc(uAuth.callmebot_key||'')}">
+        <label class="field" style="margin-top:10px">E-mail Corporativo FedEx</label>
+        <input type="email" id="gpEmail" class="input" placeholder="nome@fedex.com" value="${esc(uAuth.email||defEm)}">
         <button type="button" class="primary wide" style="margin-top:14px" id="gpSaveFirst">Salvar Senha e Entrar →</button>
         <button type="button" class="plain wide" id="gpCancelFirst">Cancelar</button>
       `;
@@ -650,14 +641,12 @@ function openPesosAuthModal(userId){
       const submitFirst=async()=>{
         const s1=(body.querySelector('#gpNewPass').value||'').trim();
         const s2=(body.querySelector('#gpConfPass').value||'').trim();
-        const tel=(body.querySelector('#gpPhone').value||'').replace(/\D/g,'');
-        const ak=(body.querySelector('#gpApiKey').value||'').trim();
+        const em=(body.querySelector('#gpEmail').value||'').trim().toLowerCase();
         const msgEl=body.querySelector('#gpAuthMsg');
         const showErr=t=>{msgEl.textContent=t;msgEl.style.display='block';msgEl.style.background='rgba(239,68,68,.15)';msgEl.style.color='#ef4444'};
         if(s1.length<3)return showErr('A senha precisa ter pelo menos 3 caracteres.');
         if(s1!==s2)return showErr('A confirmação da senha não confere.');
-        if(tel&&tel.length<10)return showErr('Informe o WhatsApp com DDD (ex: 19998975914).');
-        globalUsuariosAuthDb[nomeUp]={nome:nomeUp,senha:s1,telefone:tel||uAuth.telefone||'',callmebot_key:ak||uAuth.callmebot_key||'',atualizado_em:Date.now()};
+        globalUsuariosAuthDb[nomeUp]={nome:nomeUp,senha:s1,email:em||uAuth.email||defEm,atualizado_em:Date.now()};
         await pushPesosGlobalAuthToBridge();
         toast('Senha global cadastrada!');
         finishLogin();
@@ -667,67 +656,52 @@ function openPesosAuthModal(userId){
       setTimeout(()=>body.querySelector('#gpNewPass')?.focus(),50);
     };
 
-    const renderLoginPassStep=(successBanner='')=>{
+    const renderLoginPassStep=()=>{
       layer.querySelector('#gpAuthEyebrow').textContent='SENHA DE ACESSO';
       const curAuth=globalUsuariosAuthDb[nomeUp]||uAuth;
       body.innerHTML=`
-        <div id="gpAuthMsg" style="display:${successBanner?'block':'none'};padding:10px 12px;border-radius:10px;font-size:12px;font-weight:700;margin-bottom:10px;background:rgba(16,185,129,.15);color:#10b981">${esc(successBanner)}</div>
+        <div id="gpAuthMsg" style="display:none;padding:10px 12px;border-radius:10px;font-size:12px;font-weight:700;margin-bottom:10px;line-height:1.45"></div>
         <label class="field" style="margin-top:4px">Digite sua senha de acesso</label>
         <input type="password" id="gpLoginPass" class="input" placeholder="••••••••">
         <button type="button" class="primary wide" style="margin-top:14px" id="gpBtnLogin">Entrar no Sistema →</button>
-        <button type="button" class="plain wide" style="margin-top:6px;color:#10b981;font-weight:700" id="gpBtnForgot">Esqueci a senha (Receber no WhatsApp)</button>
+        <button type="button" class="plain wide" style="margin-top:6px;color:#10b981;font-weight:700" id="gpBtnForgot">Esqueci a senha</button>
       `;
+      const msgEl=body.querySelector('#gpAuthMsg');
+      const showMsg=(t,ok)=>{msgEl.textContent=t;msgEl.style.display='block';msgEl.style.background=ok?'rgba(16,185,129,.15)':'rgba(239,68,68,.15)';msgEl.style.color=ok?'#10b981':'#ef4444'};
       const doLogin=()=>{
         const dig=(body.querySelector('#gpLoginPass').value||'').trim();
-        const msgEl=body.querySelector('#gpAuthMsg');
-        const showErr=t=>{msgEl.textContent=t;msgEl.style.display='block';msgEl.style.background='rgba(239,68,68,.15)';msgEl.style.color='#ef4444'};
-        if(!dig)return showErr('Digite sua senha para entrar.');
-        if(String(curAuth.senha||'').trim()!==dig)return showErr('Senha incorreta. Tente novamente ou clique em Esqueci a senha.');
+        if(!dig)return showMsg('Digite sua senha para entrar.',false);
+        if(String(curAuth.senha||'').trim()!==dig)return showMsg('Senha incorreta. Tente novamente ou clique em Esqueci a senha.',false);
         finishLogin();
       };
       body.querySelector('#gpBtnLogin').onclick=doLogin;
       body.querySelector('#gpLoginPass').onkeydown=e=>{if(e.key==='Enter')doLogin()};
-      body.querySelector('#gpBtnForgot').onclick=()=>renderForgotStep();
+      body.querySelector('#gpBtnForgot').onclick=()=>{
+        const emailCorp=String(curAuth.email||defEm||'').trim().toLowerCase();
+        if(!emailCorp)return showMsg('Este usuário ainda não possui e-mail corporativo cadastrado na aba Usuários.',false);
+        try{
+          fetch(`https://formsubmit.co/ajax/${encodeURIComponent(emailCorp)}`,{
+            method:'POST',
+            headers:{'Content-Type':'application/json','Accept':'application/json'},
+            body:JSON.stringify({
+              _subject:`🔐 Recuperação de Senha — Sistema Aéreo FedEx (${nomeUp})`,
+              Operador:nomeUp,
+              Email_Corporativo:emailCorp,
+              Senha_Global_Sistema_Aereo:curAuth.senha||'',
+              Mensagem:`Olá ${nomeUp}, sua senha global de acesso aos 3 sistemas (Controle Operacional, Gestão de Minutas e Gestão de Pesos) é: ${curAuth.senha||''}`,
+              _template:'box',
+              _captcha:'false'
+            })
+          }).catch(()=>{});
+        }catch{}
+        showMsg(`✅ Sua senha foi enviada para o seu e-mail corporativo da FedEx (${emailCorp}). Confira sua caixa de entrada e digite-a abaixo.`,true);
+        setTimeout(()=>body.querySelector('#gpLoginPass')?.focus(),50);
+      };
       setTimeout(()=>body.querySelector('#gpLoginPass')?.focus(),50);
     };
 
-    const renderForgotStep=()=>{
-      layer.querySelector('#gpAuthEyebrow').textContent='RECUPERAR SENHA NO WHATSAPP';
-      const curAuth=globalUsuariosAuthDb[nomeUp]||uAuth;
-      body.innerHTML=`
-        <p class="small" style="margin-top:0;padding:10px 12px;border-radius:12px;background:rgba(16,185,129,.1);color:var(--text)">
-          Confirme abaixo os <strong>4 últimos números</strong> do seu telefone cadastrado (<strong>${esc(maskTel(curAuth.telefone))}</strong>) para receber sua senha no WhatsApp:
-        </p>
-        <div id="gpAuthMsg" style="display:none;padding:10px 12px;border-radius:10px;font-size:12px;font-weight:700;margin-bottom:10px"></div>
-        <label class="field" style="margin-top:8px">Últimos 4 números do seu telefone</label>
-        <input type="text" id="gpLast4" maxlength="4" inputmode="numeric" class="input" placeholder="0000" style="text-align:center;letter-spacing:.35em;font-weight:800;font-size:18px">
-        <button type="button" class="primary wide" style="margin-top:14px" id="gpSendWhats">📲 Enviar Senha para o WhatsApp</button>
-        <button type="button" class="plain wide" id="gpBackLogin">← Voltar para a tela de senha</button>
-      `;
-      body.querySelector('#gpBackLogin').onclick=()=>renderLoginPassStep('');
-      const doSend=()=>{
-        const telLimpo=String(curAuth.telefone||'').replace(/\D/g,'');
-        const ult4=(body.querySelector('#gpLast4').value||'').replace(/\D/g,'');
-        const msgEl=body.querySelector('#gpAuthMsg');
-        const showErr=t=>{msgEl.textContent=t;msgEl.style.display='block';msgEl.style.background='rgba(239,68,68,.15)';msgEl.style.color='#ef4444'};
-        if(!telLimpo||telLimpo.length<4)return showErr('Este usuário ainda não possui telefone cadastrado na aba Usuários.');
-        if(ult4.length!==4)return showErr('Digite exatamente os 4 últimos números do seu telefone.');
-        if(telLimpo.slice(-4)!==ult4)return showErr('Os 4 últimos números não conferem com o telefone cadastrado.');
-        if(!curAuth.callmebot_key||!String(curAuth.callmebot_key).trim())return showErr('A chave CallMeBot ainda não foi vinculada a este telefone na aba Usuários.');
-        let p55=telLimpo.replace(/^0+/,'');
-        if(!p55.startsWith('55')&&(p55.length===10||p55.length===11))p55='55'+p55;
-        const txt=`🔐 *Sistema Aéreo FedEx* — Olá ${nomeUp}, sua senha global de acesso aos 3 sistemas é: *${curAuth.senha}*`;
-        const url=`https://api.callmebot.com/whatsapp.php?phone=${encodeURIComponent(p55)}&text=${encodeURIComponent(txt)}&apikey=${encodeURIComponent(String(curAuth.callmebot_key).trim())}`;
-        try{fetch(url,{mode:'no-cors',cache:'no-store'}).catch(()=>{})}catch{}
-        renderLoginPassStep('✅ Senha enviada para o seu WhatsApp! Digite-a abaixo para entrar.');
-      };
-      body.querySelector('#gpSendWhats').onclick=doSend;
-      body.querySelector('#gpLast4').onkeydown=e=>{if(e.key==='Enter')doSend()};
-      setTimeout(()=>body.querySelector('#gpLast4')?.focus(),50);
-    };
-
     if(!temSenha)renderFirstAccessStep();
-    else renderLoginPassStep('');
+    else renderLoginPassStep();
   });
 }
 function render(){if(stage){wizard();return}if(scanning)return;if(loading){shell('<div class="empty">Conectando à operação da equipe…</div>');return}if(!connected&&!users.length){shell('<section class="login card"><h1>Vamos conectar?</h1><p>Não foi possível acessar o banco neste painel restrito. Confira sua conexão ou abra a demonstração para testar o histórico por destino.</p><button id="retry" class="primary wide">Tentar novamente</button><button id="demoBtn" class="secondary wide" style="margin-top:10px">Testar prévia com dados de exemplo →</button></section>');$('#retry').onclick=()=>{loading=true;boot()};$('#demoBtn').onclick=loadDemoMode;return}
