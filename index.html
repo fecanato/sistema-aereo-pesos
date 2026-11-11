@@ -767,9 +767,15 @@ async function fetchCorrectionsForOp(o) {
   const candidates = [];
   const checkPayload = (p) => {
     if (!p || typeof p !== 'object') return;
-    const matchesId = p.operacao_id && String(p.operacao_id) === String(o.id);
-    const matchesDate = p.flight_date && o.data_operacao && String(p.flight_date).slice(0, 10) === String(o.data_operacao).slice(0, 10);
-    if (matchesId || matchesDate) {
+    if (p.operacao_id) {
+      if (String(p.operacao_id) === String(o.id)) {
+        candidates.push(p);
+      }
+      return;
+    }
+    const sameDateOpsCount = state.ops.filter(x => x.status === 'ABERTA' && x.data_operacao && o.data_operacao && String(x.data_operacao).slice(0, 10) === String(o.data_operacao).slice(0, 10)).length;
+    const matchesDate = p.flight_date && o.data_operacao && String(p.flight_date).slice(0, 10) === String(o.data_operacao).slice(0, 10) && sameDateOpsCount <= 1;
+    if (matchesDate) {
       candidates.push(p);
     }
   };
@@ -1145,7 +1151,138 @@ async function api(path,{method='GET',body,prefer='return=representation'}={}){i
 async function allRows(path){const result=[];for(let offset=0;;offset+=500){const rows=await api(`${path}${path.includes('?')?'&':'?'}limit=500&offset=${offset}`);result.push(...rows);if(rows.length<500)break}return result}
 function isFlow(){return stage>0||scanning||saving}
 function safeRender(){if(!isFlow()&&!document.querySelector('.modal'))render();if(specialDetail)updateSpecialDetail();if(destDetail)updateDestDetail()}
-async function loadOperations(){const rows=await api('operacoes?select=*&order=criada_em.desc');const previous=new Map(state.ops.map(o=>[o.id,o]));state.ops=rows.map(r=>({...r,data_operacao:resolveOpIsoDate(r),date:showDate(r.data_operacao,r.nome),rawRecords:previous.get(r.id)?.rawRecords||[],corrections:previous.get(r.id)?.corrections||[],records:previous.get(r.id)?.records||[],loaded:previous.get(r.id)?.loaded||false}));}
+let multiActiveOpsMap = {};
+try {
+  const rawM = localStorage.getItem('peso_multi_active_ops_v1');
+  if (rawM) multiActiveOpsMap = JSON.parse(rawM) || {};
+} catch {}
+
+function saveMultiActiveOpsLocal() {
+  try {
+    localStorage.setItem('peso_multi_active_ops_v1', JSON.stringify(multiActiveOpsMap));
+  } catch {}
+}
+
+async function syncMultiActiveOpsFromBridge() {
+  try {
+    const res = await fetch(`${SUITE_BRIDGE_URL}/rest/v1/minutas?select=dados&id=eq.__SYS_PESOS_MULTI_OPS__`, {
+      headers: {
+        apikey: SUITE_BRIDGE_KEY,
+        Authorization: `Bearer ${SUITE_BRIDGE_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      cache: 'no-store'
+    });
+    if (res.ok) {
+      const rows = await res.json();
+      if (Array.isArray(rows) && rows[0] && rows[0].dados && rows[0].dados.ops) {
+        const cloudOps = rows[0].dados.ops;
+        for (const [k, v] of Object.entries(cloudOps)) {
+          if (!multiActiveOpsMap[k] || Number(v.updatedAt || 0) >= Number(multiActiveOpsMap[k].updatedAt || 0)) {
+            multiActiveOpsMap[k] = v;
+          }
+        }
+        saveMultiActiveOpsLocal();
+      }
+    }
+  } catch {}
+}
+
+async function pushMultiActiveOpsToBridge() {
+  saveMultiActiveOpsLocal();
+  try {
+    await fetch(`${SUITE_BRIDGE_URL}/rest/v1/minutas?on_conflict=id`, {
+      method: 'POST',
+      headers: {
+        apikey: SUITE_BRIDGE_KEY,
+        Authorization: `Bearer ${SUITE_BRIDGE_KEY}`,
+        'Content-Type': 'application/json',
+        Prefer: 'resolution=merge-duplicates,return=minimal'
+      },
+      body: JSON.stringify([{
+        id: '__SYS_PESOS_MULTI_OPS__',
+        destino: 'SYS_PESOS_OPS',
+        cia: 'SYS',
+        operador: state.name || 'PESOS',
+        status: 'ATIVA',
+        operacao: 'GLOBAL_PESOS_OPS',
+        dados: { ops: multiActiveOpsMap, updatedAt: Date.now() }
+      }])
+    });
+  } catch {}
+}
+
+async function ensureDbOperationOpenForWrite(opId, nome = '', dataOp = '') {
+  if (!opId) return;
+  try {
+    await api(`operacoes?id=eq.${encodeURIComponent(opId)}`, { method: 'PATCH', body: { status: 'ABERTA' } });
+  } catch (err) {
+    if (err?.code === '23505') {
+      // O banco possui restrição única em status='ABERTA': estaciona outras linhas apenas no nível físico SQL enquanto preserva todas ABERTAS no multiActiveOpsMap!
+      try {
+        const openDbRows = await api(`operacoes?select=id,nome,data_operacao&status=eq.ABERTA`);
+        for (const r of (openDbRows || [])) {
+          if (r.id !== opId) {
+            if (!multiActiveOpsMap[r.id]) {
+              multiActiveOpsMap[r.id] = { id: r.id, nome: r.nome, data_operacao: resolveOpIsoDate(r), status: 'ABERTA', updatedAt: Date.now() };
+            }
+            await api(`operacoes?id=eq.${encodeURIComponent(r.id)}`, { method: 'PATCH', body: { status: 'FINALIZADA' } }).catch(() => {});
+          }
+        }
+        await api(`operacoes?id=eq.${encodeURIComponent(opId)}`, { method: 'PATCH', body: { status: 'ABERTA' } });
+      } catch {}
+    }
+  }
+}
+
+async function loadOperations(){
+  const [rows] = await Promise.all([
+    api('operacoes?select=*&order=criada_em.desc'),
+    syncMultiActiveOpsFromBridge()
+  ]);
+  const previous = new Map(state.ops.map(o => [o.id, o]));
+  const seenIds = new Set();
+  const mapped = rows.map(r => {
+    seenIds.add(r.id);
+    const mEntry = multiActiveOpsMap[r.id];
+    const resolvedIso = (mEntry && mEntry.data_operacao) ? mEntry.data_operacao : resolveOpIsoDate(r);
+    const effectiveStatus = (mEntry && mEntry.status) ? mEntry.status : r.status;
+    if (r.status === 'ABERTA' && !mEntry) {
+      multiActiveOpsMap[r.id] = { id: r.id, nome: r.nome, data_operacao: resolvedIso, status: 'ABERTA', updatedAt: Date.now() };
+    }
+    return {
+      ...r,
+      nome: (mEntry && mEntry.nome) || r.nome,
+      status: effectiveStatus,
+      finalizada_em: effectiveStatus === 'ABERTA' ? null : r.finalizada_em,
+      data_operacao: resolvedIso,
+      date: showDate(resolvedIso, (mEntry && mEntry.nome) || r.nome),
+      rawRecords: previous.get(r.id)?.rawRecords || [],
+      corrections: previous.get(r.id)?.corrections || [],
+      records: previous.get(r.id)?.records || [],
+      loaded: previous.get(r.id)?.loaded || false
+    };
+  });
+  for (const [mId, mVal] of Object.entries(multiActiveOpsMap)) {
+    if (mVal && mVal.status === 'ABERTA' && !seenIds.has(mId)) {
+      const iso = mVal.data_operacao || todayIsoBrazil();
+      mapped.unshift({
+        id: mId,
+        nome: mVal.nome || 'Operação',
+        status: 'ABERTA',
+        finalizada_em: null,
+        data_operacao: iso,
+        date: showDate(iso, mVal.nome),
+        rawRecords: previous.get(mId)?.rawRecords || [],
+        corrections: previous.get(mId)?.corrections || [],
+        records: previous.get(mId)?.records || [],
+        loaded: previous.get(mId)?.loaded || false
+      });
+    }
+  }
+  saveMultiActiveOpsLocal();
+  state.ops = mapped;
+}
 async function loadRecords(id){const epoch=++recordEpoch;const operation=state.ops.find(o=>o.id===id);const [rows,pMeta,corrs]=await Promise.all([allRows(`pesagens?select=*&operacao_id=eq.${encodeURIComponent(id)}&order=criada_em.asc,id.asc`),fetchPalletMetaForOp(id),fetchCorrectionsForOp(operation||{id})]);if(epoch!==recordEpoch||id!==active)return;if(!operation)return;operation.rawRecords=rows.map(r=>{const m=pMeta&&pMeta[r.id];const rawAwb=String(r.awb||'');const isPlt=r.tipo==='PALLET'||r.categoria==='PALLET'||rawAwb.startsWith('PALLET:')||Boolean(m);const cleanAwb=isPlt?(m?.awb||rawAwb.replace(/^PALLET:/i,'')||r.awb):r.awb;return {id:r.id,dest:r.destino,vol:r.volumes,kg:Number(r.peso_kg),dg:r.tipo==='DG'&&!isPlt,pallet:isPlt,type:isPlt?'PALLET':r.tipo,category:isPlt?'PALLET':(r.tipo==='DG'?'DG':['DELIVERY','COMAIL'].includes(r.tipo)?r.tipo:(r.categoria||null)),awb:cleanAwb,user:users.find(u=>u.id===r.usuario_id)?.nome||'Usuário',editor:users.find(u=>u.id===r.editado_por)?.nome,updated:r.atualizada_em,created:r.criada_em,time:showTime(r.criada_em)}});operation.corrections=corrs||[];applyCorrectionsToOperationRecords(operation);operation.loaded=true;}
 async function detectCategories(){try{await api('pesagens?select=categoria&limit=0');hasCategories=true}catch(e){if(e.code==='42703'||e.code==='PGRST204')hasCategories=false;else throw e}}
 async function detectDelivery(){try{hasDelivery=await api('rpc/peso_delivery_habilitado',{method:'POST',body:{}})===true}catch(e){if(e.code==='PGRST202'||e.code==='42883')hasDelivery=false;else throw e}}
@@ -1162,16 +1299,21 @@ function handleIncomingBridgePayload(data){
   }
   const p=data.payload||data;
   if(data.type==='PESOS_CORRECOES_IA'||Array.isArray(p?.corrections)){
-    const cur=op();
-    if(cur){
-      const matchesId=p.operacao_id&&String(p.operacao_id)===String(cur.id);
-      const matchesDate=p.flight_date&&cur.data_operacao&&String(p.flight_date).slice(0,10)===String(cur.data_operacao).slice(0,10);
-      if(matchesId||matchesDate||!p.operacao_id){
-        cur.corrections=p.cleared?[]:(Array.isArray(p.corrections)?p.corrections:[]);
-        try{localStorage.setItem('peso_correcoes_ia_'+cur.id,JSON.stringify(p))}catch{}
-        applyCorrectionsToOperationRecords(cur);
+    const targetOp = p?.operacao_id
+      ? state.ops.find(x => String(x.id) === String(p.operacao_id))
+      : op();
+    if(targetOp){
+      const matchesId = p.operacao_id && String(p.operacao_id) === String(targetOp.id);
+      const sameDateOpsCount = state.ops.filter(x => x.status === 'ABERTA' && x.data_operacao && targetOp.data_operacao && String(x.data_operacao).slice(0, 10) === String(targetOp.data_operacao).slice(0, 10)).length;
+      const matchesDate = !p.operacao_id && p.flight_date && targetOp.data_operacao && String(p.flight_date).slice(0,10) === String(targetOp.data_operacao).slice(0,10) && sameDateOpsCount <= 1;
+      if(matchesId || matchesDate){
+        targetOp.corrections = p.cleared ? [] : (Array.isArray(p.corrections) ? p.corrections : []);
+        try{localStorage.setItem('peso_correcoes_ia_'+targetOp.id, JSON.stringify(p))}catch{}
+        applyCorrectionsToOperationRecords(targetOp);
         safeRender();
-        if(cur.corrections.length>0)toast(`🔧 Correção da IA recebida do Controle Operacional (${cur.corrections.length} ajuste${cur.corrections.length>1?'s':''}).`);
+        if(active === targetOp.id && targetOp.corrections.length > 0){
+          toast(`🔧 Correção da IA recebida do Controle Operacional (${targetOp.corrections.length} ajuste${targetOp.corrections.length>1?'s':''}).`);
+        }
       }
     }
   }
@@ -1237,7 +1379,7 @@ function shell(content){
     <div class="suite-topbar-inner">
       <div class="suite-brand-wrap">
         ${brand()}
-        ${curOp ? `<span class="suite-op-pill">${esc(curOp.nome)}</span>` : ''}
+        ${curOp ? `<button type="button" class="suite-op-pill" id="topOpSwitchPill" title="Clique para alternar entre operações ativas ou criar outra operação" style="cursor:pointer;border:1px solid rgba(16,185,129,.35)">${esc(curOp.nome)} ⇄</button>` : ''}
       </div>
       ${fedexCenterLogoHtml()}
       <div class="suite-actions">
@@ -1248,6 +1390,7 @@ function shell(content){
   </header>
   <div class="shell">${content}</div>`;
   if($('#brandHome'))$('#brandHome').onclick=()=>{if(state.name){active=null;screen='ops';render()}};
+  if($('#topOpSwitchPill'))$('#topOpSwitchPill').onclick=()=>{if(state.name){active=null;screen='ops';render()}};
   if($('#toggleTheme'))$('#toggleTheme').onclick=toggleTheme;
   if($('#switchUser'))$('#switchUser').onclick=()=>{selectedUser=null;state.name='';try{localStorage.removeItem('peso-equipe-user');localStorage.removeItem('sistema_aereo_usuario');localStorage.removeItem('sistema_aereo_sessao_autenticada_v1')}catch{}screen='login';render()};
 }
@@ -1400,7 +1543,7 @@ function openPesosAuthModal(userId){
 }
 function render(){if(stage){wizard();return}if(scanning)return;if(loading){shell('<div class="empty">Conectando à operação da equipe…</div>');return}if(!connected&&!users.length){shell('<section class="login card"><h1>Vamos conectar?</h1><p>Não foi possível acessar o banco neste painel restrito. Confira sua conexão ou abra a demonstração para testar o histórico por destino.</p><button id="retry" class="primary wide">Tentar novamente</button><button id="demoBtn" class="secondary wide" style="margin-top:10px">Testar prévia com dados de exemplo →</button></section>');$('#retry').onclick=()=>{loading=true;boot()};$('#demoBtn').onclick=loadDemoMode;return}
 if(screen==='login'){loadPesosGlobalAuthLocal();users=mergePesosUsersWithGlobal(users);shell(`<section class="login"><span class="eyebrow">ACESSO AO SISTEMA</span><h1>Quem está pesando?</h1><p>Selecione seu nome para identificar os lançamentos.</p><div class="card user-list">${users.map(u=>{const nUp=String(u.nome||'').trim().toUpperCase();const hasP=Boolean(globalUsuariosAuthDb[nUp]?.senha&&String(globalUsuariosAuthDb[nUp].senha).trim().length>0);return `<button class="user-option" data-user="${esc(u.id)}"><span class="avatar">${esc(u.nome.slice(0,2))}</span><span style="display:flex;flex-direction:column;gap:2px"><b>${esc(u.nome)}</b>${hasP?'':'<small style="font-size:10px;font-weight:700;color:#f59e0b">1º Acesso</small>'}</span><span class="arrow">→</span></button>`}).join('')}</div></section>`);document.querySelectorAll('[data-user]').forEach(b=>b.onclick=()=>openPesosAuthModal(b.dataset.user));return}
-if(screen==='ops'){const open=state.ops.filter(o=>o.status==='ABERTA'),closed=state.ops.filter(o=>o.status==='FINALIZADA'),rows=historyView?closed:open;shell(`<div class="intro"><div><span class="eyebrow">SEU ESPAÇO DE TRABALHO</span><h1>Olá, ${esc(state.name)}.</h1><p>${historyView?'Operações finalizadas nas últimas 48 horas.':'Uma equipe. Uma operação. Todos os pesos.'}</p></div><button class="primary" id="create" ${open.length?'disabled':''}>＋ Criar operação</button></div><nav class="tabs"><button id="tabOpen" class="${!historyView?'active':''}">Em andamento (${open.length})</button><button id="tabHistory" class="${historyView?'active':''}">Histórico 48h (${closed.length})</button><button id="reload" class="tab-reload-btn" title="Atualizar operações" aria-label="Atualizar operações">↻</button></nav>${rows.map(o=>o.status==='ABERTA'?`<button class="op" data-op="${esc(o.id)}"><div><span class="green">● Em andamento</span><strong>${esc(o.nome)}</strong><span class="small muted">${esc(o.date)} · Entrar para lançar e conferir pesos</span></div><span class="arrow">→</span></button>`:`<div class="op op-history-card"><div class="op-history-info" data-op="${esc(o.id)}"><strong>${esc(o.nome)}</strong><span class="small muted">Finalizada • No histórico por 48h${o.finalizada_em?' · Finalizada às '+showTime(o.finalizada_em):(o.date?' · '+esc(o.date):'')}</span></div><div class="op-history-actions"><button type="button" class="btn-reopen-op" data-reopen-op="${esc(o.id)}">Reabrir operação</button><button type="button" class="btn-consult-op" data-op="${esc(o.id)}">Consultar →</button></div></div>`).join('')||`<div class="card empty">${historyView?'Nenhuma operação no histórico de 48h.':'Nenhuma operação aberta. Crie a operação do dia para começar.'}</div>`}`);$('#create').onclick=create;$('#tabOpen').onclick=()=>{historyView=false;render()};$('#tabHistory').onclick=()=>{historyView=true;render()};$('#reload').onclick=refresh;document.querySelectorAll('[data-op]').forEach(b=>b.onclick=()=>enterOperation(b.dataset.op));document.querySelectorAll('[data-reopen-op]').forEach(b=>b.onclick=e=>{e.stopPropagation();reopenFromHistory(b.dataset.reopenOp)});return}
+if(screen==='ops'){const open=state.ops.filter(o=>o.status==='ABERTA'),closed=state.ops.filter(o=>o.status==='FINALIZADA'),rows=historyView?closed:open;shell(`<div class="intro"><div><span class="eyebrow">SEU ESPAÇO DE TRABALHO</span><h1>Olá, ${esc(state.name)}.</h1><p>${historyView?'Operações finalizadas nas últimas 48 horas.':'Múltiplas operações ativas permitidas sem conflito.'}</p></div><button class="primary" id="create">＋ Criar operação</button></div><nav class="tabs"><button id="tabOpen" class="${!historyView?'active':''}">Em andamento (${open.length})</button><button id="tabHistory" class="${historyView?'active':''}">Histórico 48h (${closed.length})</button><button id="reload" class="tab-reload-btn" title="Atualizar operações" aria-label="Atualizar operações">↻</button></nav>${rows.map(o=>o.status==='ABERTA'?`<button class="op" data-op="${esc(o.id)}"><div><span class="green">● Em andamento</span><strong>${esc(o.nome)}</strong><span class="small muted">${esc(o.date)} · Entrar para lançar e conferir pesos</span></div><span class="arrow">→</span></button>`:`<div class="op op-history-card"><div class="op-history-info" data-op="${esc(o.id)}"><strong>${esc(o.nome)}</strong><span class="small muted">Finalizada • No histórico por 48h${o.finalizada_em?' · Finalizada às '+showTime(o.finalizada_em):(o.date?' · '+esc(o.date):'')}</span></div><div class="op-history-actions"><button type="button" class="btn-reopen-op" data-reopen-op="${esc(o.id)}">Reabrir operação</button><button type="button" class="btn-consult-op" data-op="${esc(o.id)}">Consultar →</button></div></div>`).join('')||`<div class="card empty">${historyView?'Nenhuma operação no histórico de 48h.':'Nenhuma operação aberta. Crie a operação do dia para começar.'}</div>`}`);$('#create').onclick=create;$('#tabOpen').onclick=()=>{historyView=false;render()};$('#tabHistory').onclick=()=>{historyView=true;render()};$('#reload').onclick=refresh;document.querySelectorAll('[data-op]').forEach(b=>b.onclick=()=>enterOperation(b.dataset.op));document.querySelectorAll('[data-reopen-op]').forEach(b=>b.onclick=e=>{e.stopPropagation();reopenFromHistory(b.dataset.reopenOp)});return}
 const o=op();if(!o){screen='ops';render();return}const t=sum(o.records),closed=o.status==='FINALIZADA';shell(`<button class="back" id="back">← Todas as operações</button><div class="intro"><div><span class="eyebrow">${esc(o.date)} · ${closed?'OPERAÇÃO FINALIZADA':'OPERAÇÃO EM ANDAMENTO'}</span><h1>${esc(o.nome)}</h1><p>${closed?'Relatório disponível. Reabra para corrigir lançamentos.':'Pesagens reunidas por destino.'}</p></div>${closed?'':`<div class="operation-actions priority-actions">${hasCategories?`<div class="main-types"><button class="primary" id="insertBox" ${!o.loaded?'disabled':''}><svg class="type-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="M3 8v10l9 5 9-5V8M12 13v10M7.5 5.5l9 5v4"/></svg><span>INSERIR CAIXA</span></button><button class="primary" id="insertBag" ${!o.loaded?'disabled':''}><svg class="type-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M8 3h8l-2 4h-4L8 3Z"/><path d="M9 7h6M10 7C9 10 4 13 4 18c0 3 3 4 8 4s8-1 8-4c0-5-5-8-6-11"/><path d="m14 8 3 2M9 16c0-2 1-3 2-4"/></svg><span>INSERIR SACA</span></button></div><div class="other-types-label">OUTROS TIPOS</div><div class="special-types"><button class="secondary" id="insertdg" ${!o.loaded?'disabled':''}>DG</button><button class="secondary" id="insertPallet" ${!o.loaded?'disabled':''}>PALLET</button>${hasDelivery?`<button class="secondary" id="insertDelivery" ${!o.loaded?'disabled':''}>DELIVERY</button>`:''}${hasComail?`<button class="secondary" id="insertComail" ${!o.loaded?'disabled':''}>COMAIL</button>`:''}</div>`:`<button class="primary" id="insert" ${!o.loaded?'disabled':''}>＋ Inserir peso</button><button class="secondary" id="insertdg" ${!o.loaded?'disabled':''}>▣ INSERIR DG</button><button class="secondary" id="insertPallet" ${!o.loaded?'disabled':''}>▣ INSERIR PALLET</button>`}</div>`}</div>${!connected?'<div class="connection-warning">Sem conexão: os valores exibidos podem estar desatualizados.</div>':''}<div class="stats"><div class="card stat"><span>Volumes pesados</span><strong>${t.vol}</strong></div><div class="card stat"><span>Peso total · kg</span><strong>${fmt(t.kg)}</strong></div><div class="card stat"><span>Lançamentos</span><strong>${o.records.length}</strong></div></div>${specialStatsHtml(o)}<div class="toolbar"><button class="secondary" id="export" ${!o.loaded?'disabled':''}>↓ Exportar Excel</button><button class="plain" id="reload">↻ Atualizar</button><button class="${closed?'secondary':'plain'}" id="statusAction">${closed?'Reabrir operação':'Finalizar operação'}</button></div><div class="board-switcher"><div class="board-tabs" role="tablist"><button type="button" class="board-tab ${boardTab==='dest'?'active':''}" id="tabBoardDest">Totais por destino (${grouped(o.records).length})</button><button type="button" class="board-tab ${boardTab==='recent'?'active':''}" id="tabBoardRecent">Últimos lançamentos (${o.records.length})</button></div><div class="swipe-hint">← Deslize para o lado para alternar entre as listas →</div></div><div class="grid swipe-grid" id="boardGrid"><section class="card board-panel ${boardTab==='dest'?'':'hidden-mobile'}"><div class="sectionhead"><h2>Totais por destino</h2><span class="chip" id="destCountBadge">${grouped(o.records).length} praças · kg</span></div><div class="filter-bar"><input type="search" id="destSummarySearch" class="input filter-search" placeholder="Buscar código ou cidade (ex.: BELA, Manaus)…" autocomplete="off" value="${esc(destSummaryQuery)}"></div><div id="destSummaryListContainer">${renderDestSummaryRows(o)}</div><div class="total"><span>Total geral</span><span>${fmt(t.kg)} kg</span></div><button type="button" id="btnClearCorrections" class="btn-clear-corr ${(o.corrections&&o.corrections.length)?'':'idle'}"><span>↺ Limpar correção${(o.corrections&&o.corrections.length)?` (${o.corrections.length} ativa${o.corrections.length>1?'s':''})`:''}</span></button></section><section class="card board-panel ${boardTab==='recent'?'':'hidden-mobile'}"><div class="sectionhead"><h2>Últimos lançamentos</h2><span class="small muted" id="recentCountLabel">Mais recentes</span></div><div class="filter-bar"><input type="search" id="recordSearch" class="input filter-search" placeholder="Buscar destino, AWB ou colega…" autocomplete="off" value="${esc(recentQuery)}"><div class="filter-chips">${[['ALL','Todos'],['CAIXA','CAIXA'],['SACA','SACA'],['PALLET','PALLET'],['DG','DG'],['DELIVERY','DELIVERY'],['COMAIL','COMAIL']].map(([k,label])=>`<button type="button" class="filter-chip ${recentFilter===k?'active':''}" data-filter-kind="${k}">${label}</button>`).join('')}</div></div><div id="recentListContainer">${renderRecentRows(o,closed)}</div></section></div>`);
 $('#back').onclick=()=>{screen='ops';active=null;if(recordChannel){realtime.removeChannel(recordChannel);recordChannel=null}render()};$('#reload').onclick=refresh;$('#statusAction').onclick=changeStatus;$('#export').onclick=exportExcel;if($('#btnClearCorrections'))$('#btnClearCorrections').onclick=clearCorrectionsForActiveOp;
 if($('#tabBoardDest'))$('#tabBoardDest').onclick=()=>{boardTab='dest';render()};
@@ -1410,7 +1553,7 @@ if($('#recordSearch'))$('#recordSearch').oninput=e=>{recentQuery=e.target.value;
 document.querySelectorAll('[data-filter-kind]').forEach(b=>b.onclick=()=>{recentFilter=b.dataset.filterKind;document.querySelectorAll('[data-filter-kind]').forEach(x=>x.classList.toggle('active',x.dataset.filterKind===recentFilter));updateRecentList()});
 bindSwipeBoard();
 if(!closed){if(hasCategories){if(hasComail)$('#insertComail').onclick=()=>startDraft('COMAIL');if(hasDelivery)$('#insertDelivery').onclick=()=>startDraft('DELIVERY');$('#insertBox').onclick=()=>startDraft('CAIXA');$('#insertBag').onclick=()=>startDraft('SACA')}else $('#insert').onclick=()=>startDraft(null);$('#insertdg').onclick=()=>{unlockAudio();startDraft('DG')};if($('#insertPallet'))$('#insertPallet').onclick=()=>{unlockAudio();startDraft('PALLET')};bindRecordActions()}}
-async function enterOperation(id){active=id;screen='operation';render();watchRecords(id);try{await loadRecords(id);safeRender()}catch(e){toast(errorMessage(e));connected=false;safeRender()}}
+async function enterOperation(id){active=id;screen='operation';render();watchRecords(id);try{const cur=state.ops.find(x=>x.id===id);if(cur&&cur.status==='ABERTA'){await ensureDbOperationOpenForWrite(cur.id,cur.nome,cur.data_operacao)}await loadRecords(id);safeRender()}catch(e){toast(errorMessage(e));connected=false;safeRender()}}
 function modal(html){const layer=document.createElement('div');layer.className='modal';layer.innerHTML=`<div class="card">${html}</div>`;document.body.append(layer);return layer}
 function filterDestGroups(records){const q=destSummaryQuery.trim().toLocaleLowerCase();const all=grouped(records);if(!q)return all;return all.filter(([d])=>`${d} ${cityNames[d]||''}`.toLocaleLowerCase().includes(q))}
 function destCorrectionSummaryHtml(destRows){
@@ -1461,9 +1604,116 @@ function showDestDetail(dest){const operation=op();if(!operation?.loaded||!dest|
 document.addEventListener('click',event=>{const button=event.target.closest?.('[data-special-kind]');if(button&&!button.disabled){showSpecialDetail(button.dataset.specialKind);return}const destBtn=event.target.closest?.('[data-dest-detail]');if(destBtn&&!destBtn.disabled)showDestDetail(destBtn.dataset.destDetail)});
 async function ask(title,message,button='Confirmar'){return new Promise(resolve=>{const layer=modal(`<h2>${esc(title)}</h2><p>${esc(message)}</p><button class="primary wide" id="yes">${esc(button)}</button><button class="plain wide" id="no">Cancelar</button>`);const done=val=>{document.removeEventListener('keydown',onKey);layer.remove();resolve(val)};const onKey=e=>{if(e.key==='Escape')done(false)};document.addEventListener('keydown',onKey);layer.querySelector('#yes').onclick=()=>done(true);layer.querySelector('#no').onclick=()=>done(false)})}
 function addUser(){const layer=modal('<h2>Adicionar usuário</h2><form id="userForm"><label class="field" for="userName" style="margin-top:16px">Nome</label><input class="input" id="userName" required maxlength="60" autocomplete="off"><button class="primary wide" style="margin-top:14px" id="userSave">Cadastrar</button><button type="button" class="plain wide" id="cancelUser">Cancelar</button></form>');const close=()=>{document.removeEventListener('keydown',onKey);layer.remove()};const onKey=e=>{if(e.key==='Escape')close()};document.addEventListener('keydown',onKey);layer.querySelector('#cancelUser').onclick=close;layer.querySelector('#userForm').onsubmit=async e=>{e.preventDefault();const nome=layer.querySelector('#userName').value.trim().toUpperCase();if(!nome)return;const saveBtn=layer.querySelector('#userSave');saveBtn.disabled=true;try{await api('usuarios',{method:'POST',body:{nome}});users=await api('usuarios?select=*&ativo=eq.true&order=nome');close();render()}catch(error){saveBtn.disabled=false;toast(errorMessage(error))}}}
-function create(){if(state.ops.some(o=>o.status==='ABERTA'))return;const localDate=new Intl.DateTimeFormat('pt-BR',{timeZone:'America/Sao_Paulo'}).format(new Date());const layer=modal(`<h2>Nova operação</h2><form id="newop"><label class="field" for="opname" style="margin-top:16px">Nome da operação</label><input id="opname" class="input" required maxlength="100" value="Operação ${esc(localDate)}"><p class="small">A data será mantida no fuso de Brasília mesmo após as 21h / meia-noite UTC.</p><button class="primary wide" id="createSave">Criar e entrar →</button><button type="button" class="plain wide" id="cancel">Cancelar</button></form>`);const id=crypto.randomUUID();const close=()=>{document.removeEventListener('keydown',onKey);layer.remove()};const onKey=e=>{if(e.key==='Escape')close()};document.addEventListener('keydown',onKey);layer.querySelector('#cancel').onclick=close;layer.querySelector('#newop').onsubmit=async e=>{e.preventDefault();const nome=layer.querySelector('#opname').value.trim();if(!nome)return;const mDate=nome.match(/(\d{2})\/(\d{2})\/(\d{4})/);const dataOp=mDate?`${mDate[3]}-${mDate[2]}-${mDate[1]}`:todayIsoBrazil();const saveBtn=layer.querySelector('#createSave');saveBtn.disabled=true;try{try{await api('operacoes?on_conflict=id',{method:'POST',body:{id,nome,data_operacao:dataOp,criada_por:selectedUser},prefer:'resolution=ignore-duplicates,return=representation'})}catch{await api('operacoes?on_conflict=id',{method:'POST',body:{id,nome,criada_por:selectedUser},prefer:'resolution=ignore-duplicates,return=representation'})}await loadOperations();close();enterOperation(id)}catch(error){saveBtn.disabled=false;toast(errorMessage(error));await loadOperations().catch(()=>{})}}}
-async function reopenFromHistory(id){const target=state.ops.find(x=>x.id===id);if(!target)return;if(state.ops.some(x=>x.status==='ABERTA'&&x.id!==id)){toast('Finalize a operação aberta antes de reabrir esta.');return}if(!await ask('Reabrir operação?','A equipe poderá corrigir ou incluir pesagens. Exporte novamente após as alterações.','Reabrir'))return;try{const result=await api(`operacoes?id=eq.${target.id}&atualizada_em=eq.${encodeURIComponent(target.atualizada_em)}`,{method:'PATCH',body:{status:'ABERTA'}});if(!result.length)throw Error('A operação foi alterada em outro aparelho. Atualize e confira.');historyView=false;await refresh();toast('Operação reaberta.');enterOperation(target.id)}catch(e){toast(errorMessage(e));await refresh()}}
-async function changeStatus(){const o=op(),isClosed=o.status==='FINALIZADA';if(isClosed&&state.ops.some(x=>x.status==='ABERTA'&&x.id!==o.id)){toast('Finalize a operação aberta antes de reabrir esta.');return}if(!await ask(isClosed?'Reabrir operação?':'Finalizar operação?',isClosed?'A equipe poderá corrigir ou incluir pesagens. Exporte novamente após as alterações.':'Os lançamentos serão bloqueados. Esta operação será excluída 48 horas após a finalização.',isClosed?'Reabrir':'Finalizar'))return;try{const result=await api(`operacoes?id=eq.${o.id}&atualizada_em=eq.${encodeURIComponent(o.atualizada_em)}`,{method:'PATCH',body:{status:isClosed?'ABERTA':'FINALIZADA'}});if(!result.length)throw Error('A operação foi alterada em outro aparelho. Atualize e confira.');await refresh();toast(isClosed?'Operação reaberta.':'Operação finalizada. Exporte o Excel para guardar o relatório.')}catch(e){toast(errorMessage(e));await refresh()}}
+function create(){
+  const localDate=new Intl.DateTimeFormat('pt-BR',{timeZone:'America/Sao_Paulo'}).format(new Date());
+  let defaultName=`Operação ${localDate}`;
+  if(state.ops.some(o=>o.status==='ABERTA'&&o.nome===defaultName)){
+    defaultName=`Operação ${localDate} (Teste)`;
+  }
+  const layer=modal(`<h2>Nova operação</h2><form id="newop"><label class="field" for="opname" style="margin-top:16px">Nome da operação</label><input id="opname" class="input" required maxlength="100" value="${esc(defaultName)}"><p class="small">Você pode manter mais de uma operação ativa ao mesmo tempo sem comprometer a operação do dia.</p><button class="primary wide" id="createSave">Criar e entrar →</button><button type="button" class="plain wide" id="cancel">Cancelar</button></form>`);
+  const id=crypto.randomUUID();
+  const close=()=>{document.removeEventListener('keydown',onKey);layer.remove()};
+  const onKey=e=>{if(e.key==='Escape')close()};
+  document.addEventListener('keydown',onKey);
+  layer.querySelector('#cancel').onclick=close;
+  setTimeout(()=>{const inp=layer.querySelector('#opname');if(inp){inp.focus();inp.select()}},20);
+  layer.querySelector('#newop').onsubmit=async e=>{
+    e.preventDefault();
+    const nome=layer.querySelector('#opname').value.trim();
+    if(!nome)return;
+    const mDate=nome.match(/(\d{2})\/(\d{2})\/(\d{4})/);
+    const dataOp=mDate?`${mDate[3]}-${mDate[2]}-${mDate[1]}`:todayIsoBrazil();
+    const saveBtn=layer.querySelector('#createSave');
+    saveBtn.disabled=true;
+    try{
+      // Registra todas as operações atualmente abertas no mapa multi-operações antes de inserir a nova
+      for(const openOp of state.ops.filter(x=>x.status==='ABERTA')){
+        multiActiveOpsMap[openOp.id]={id:openOp.id,nome:openOp.nome,data_operacao:openOp.data_operacao,status:'ABERTA',updatedAt:Date.now()};
+      }
+      multiActiveOpsMap[id]={id,nome,data_operacao:dataOp,status:'ABERTA',updatedAt:Date.now()};
+      await pushMultiActiveOpsToBridge();
+
+      let inserted=false;
+      try{
+        await api('operacoes?on_conflict=id',{method:'POST',body:{id,nome,data_operacao:dataOp,criada_por:selectedUser},prefer:'resolution=ignore-duplicates,return=representation'});
+        inserted=true;
+      }catch(e1){
+        if(e1?.code==='23505'){
+          // Estaciona apenas no nível físico SQL qualquer outra linha ABERTA para permitir inserir a nova operação sem erro
+          const openDbRows=await api('operacoes?select=id&status=eq.ABERTA').catch(()=>[]);
+          for(const r of (openDbRows||[])){
+            if(r.id!==id)await api(`operacoes?id=eq.${encodeURIComponent(r.id)}`,{method:'PATCH',body:{status:'FINALIZADA'}}).catch(()=>{});
+          }
+          try{
+            await api('operacoes?on_conflict=id',{method:'POST',body:{id,nome,data_operacao:dataOp,criada_por:selectedUser},prefer:'resolution=ignore-duplicates,return=representation'});
+            inserted=true;
+          }catch(e2){
+            await api('operacoes?on_conflict=id',{method:'POST',body:{id,nome,criada_por:selectedUser},prefer:'resolution=ignore-duplicates,return=representation'});
+            inserted=true;
+          }
+        }else{
+          await api('operacoes?on_conflict=id',{method:'POST',body:{id,nome,criada_por:selectedUser},prefer:'resolution=ignore-duplicates,return=representation'});
+          inserted=true;
+        }
+      }
+      await loadOperations();
+      close();
+      enterOperation(id);
+    }catch(error){
+      saveBtn.disabled=false;
+      toast(errorMessage(error));
+      await loadOperations().catch(()=>{});
+    }
+  };
+}
+async function reopenFromHistory(id){
+  const target=state.ops.find(x=>x.id===id);
+  if(!target)return;
+  if(!await ask('Reabrir operação?','Esta operação ficará ativa simultaneamente com as demais operações abertas, sem conflito.','Reabrir'))return;
+  try{
+    for(const openOp of state.ops.filter(x=>x.status==='ABERTA')){
+      multiActiveOpsMap[openOp.id]={id:openOp.id,nome:openOp.nome,data_operacao:openOp.data_operacao,status:'ABERTA',updatedAt:Date.now()};
+    }
+    multiActiveOpsMap[target.id]={id:target.id,nome:target.nome,data_operacao:target.data_operacao,status:'ABERTA',updatedAt:Date.now()};
+    await pushMultiActiveOpsToBridge();
+    await ensureDbOperationOpenForWrite(target.id,target.nome,target.data_operacao);
+    historyView=false;
+    await refresh();
+    toast('Operação reaberta.');
+    enterOperation(target.id);
+  }catch(e){
+    toast(errorMessage(e));
+    await refresh();
+  }
+}
+async function changeStatus(){
+  const o=op(),isClosed=o.status==='FINALIZADA';
+  if(!await ask(isClosed?'Reabrir operação?':'Finalizar operação?',isClosed?'A equipe poderá corrigir ou incluir pesagens sem fechar as outras operações ativas.':'Os lançamentos desta operação serão bloqueados. As demais operações ativas continuarão abertas normalmente.',isClosed?'Reabrir':'Finalizar'))return;
+  try{
+    if(isClosed){
+      for(const openOp of state.ops.filter(x=>x.status==='ABERTA')){
+        multiActiveOpsMap[openOp.id]={id:openOp.id,nome:openOp.nome,data_operacao:openOp.data_operacao,status:'ABERTA',updatedAt:Date.now()};
+      }
+      multiActiveOpsMap[o.id]={id:o.id,nome:o.nome,data_operacao:o.data_operacao,status:'ABERTA',updatedAt:Date.now()};
+      await pushMultiActiveOpsToBridge();
+      await ensureDbOperationOpenForWrite(o.id,o.nome,o.data_operacao);
+    }else{
+      multiActiveOpsMap[o.id]={id:o.id,nome:o.nome,data_operacao:o.data_operacao,status:'FINALIZADA',updatedAt:Date.now()};
+      await pushMultiActiveOpsToBridge();
+      await api(`operacoes?id=eq.${encodeURIComponent(o.id)}`,{method:'PATCH',body:{status:'FINALIZADA'}}).catch(()=>{});
+      // Se houver outra operação aberta no multiActiveOpsMap, ativa ela fisicamente no banco para manter o banco sincronizado
+      const nextOpen=state.ops.find(x=>x.id!==o.id&&multiActiveOpsMap[x.id]?.status==='ABERTA');
+      if(nextOpen){
+        await ensureDbOperationOpenForWrite(nextOpen.id,nextOpen.nome,nextOpen.data_operacao);
+      }
+    }
+    await refresh();
+    toast(isClosed?'Operação reaberta.':'Operação finalizada. Exporte o Excel para guardar o relatório.');
+  }catch(e){
+    toast(errorMessage(e));
+    await refresh();
+  }
+}
 const CATEGORY_ORDER=['CAIXA','SACA','PALLET','DELIVERY','COMAIL','DG','SEM_CLASSIFICACAO'];
 function recordKind(record){if(record.pallet||record.type==='PALLET'||record.category==='PALLET')return 'PALLET';if(record.dg||record.type==='DG')return 'DG';if(['DELIVERY','COMAIL'].includes(record.type))return record.type;return record.category||'SEM_CLASSIFICACAO'}
 function categoryGroups(records){return CATEGORY_ORDER.map(kind=>({kind,...sum(records.filter(r=>recordKind(r)===kind))})).filter(r=>r.vol>0)}
@@ -1473,7 +1723,7 @@ function compositionHtml(records){return `<div class="composition">${categoryGro
 function classifyLegacy(id,r){const layer=modal(`<h2>Classificar lançamento anterior</h2><p>Este registro foi criado antes da separação de caixas e sacas. Escolha a categoria correta.</p><button class="primary wide" id="legacyBox">CAIXA · ${r.vol} volume(s)</button><button class="secondary wide" id="legacyBag" style="margin-top:10px" ${r.vol!==1?'disabled':''}>SACA · 1 volume</button>${r.vol!==1?'<p class="small">Para manter a quantidade, registros com vários volumes não podem ser convertidos em uma única saca.</p>':''}<button class="plain wide" id="legacyKeep">Editar sem classificar</button><button class="plain wide" id="legacyCancel">Cancelar</button>`);$('#legacyBox').onclick=()=>{layer.remove();startEdit(id,'CAIXA')};$('#legacyBag').onclick=()=>{layer.remove();startEdit(id,'SACA')};$('#legacyKeep').onclick=()=>{layer.remove();startEdit(id,null)};$('#legacyCancel').onclick=()=>layer.remove()}
 function startDraft(kind){if(kind==='COMAIL'&&!hasComail){toast('Atualize o aplicativo para habilitar COMAIL.');return}if(kind==='DELIVERY'&&!hasDelivery){toast('Atualize o aplicativo para habilitar DELIVERY.');return}const isDG=kind==='DG',isPallet=kind==='PALLET';category=kind;if(!navigator.onLine||!connected){toast('Conecte-se à internet para lançar pesos.');return}dgMode=isDG;palletMode=isPallet;edit=null;editVersion=null;awb='';allowDuplicatePalletAwb=false;chosen='';query='';num='';draftKgStr='';vol=(isDG||kind==='SACA')?1:0;draftId=crypto.randomUUID();if(isDG||isPallet){stage=0;scanScreen()}else{stage=1;wizard()}}
 function startEdit(id,selectedCategory=undefined){const r=op()?.records.find(r=>r.id===id);if(!r)return;const rKind=recordKind(r);if(hasCategories&&!r.dg&&!r.pallet&&rKind!=='PALLET'&&!r.category&&selectedCategory===undefined){classifyLegacy(id,r);return}category=['DELIVERY','COMAIL','PALLET'].includes(rKind)?rKind:r.dg?'DG':(selectedCategory===undefined?r.category:selectedCategory);dgMode=Boolean(r.dg&&category==='DG');palletMode=category==='PALLET';awb=r.awb||'';allowDuplicatePalletAwb=false;edit=r.id;editVersion=r.updated;chosen=r.dest;vol=r.vol;num='';draftKgStr=String(r.kg||'').replace('.',',');query='';draftId=r.id;if(dgMode||palletMode){stage=0;scanScreen()}else{stage=1;wizard()}}
-async function deleteRecord(id){const o=op(),r=o?.records.find(r=>r.id===id);if(!r)return;if(!await ask('Excluir lançamento?',`${r.dest} · ${r.vol} vol. · ${fmt(r.kg)} kg${r.awb?' · AWB '+r.awb:''}. Este lançamento será removido dos totais.`, 'Excluir'))return;try{const result=await api(`pesagens?id=eq.${id}&atualizada_em=eq.${encodeURIComponent(r.updated)}`,{method:'DELETE'});if(!result.length)throw Error('Este lançamento foi alterado ou excluído por outro colega. Atualize e confira.');if(r.pallet||recordKind(r)==='PALLET')await savePalletMetaForOp(o.id,id,null);await refresh();if(destDetail&&!op()?.records.some(x=>x.dest===destDetail.dest))closeActiveDetailModal();if(specialDetail&&!specialRecords(op(),specialDetail.kind).length)closeActiveDetailModal();toast('Lançamento excluído.')}catch(e){toast(errorMessage(e));await refresh()}}
+async function deleteRecord(id){const o=op(),r=o?.records.find(r=>r.id===id);if(!r)return;if(!await ask('Excluir lançamento?',`${r.dest} · ${r.vol} vol. · ${fmt(r.kg)} kg${r.awb?' · AWB '+r.awb:''}. Este lançamento será removido dos totais.`, 'Excluir'))return;try{await ensureDbOperationOpenForWrite(o.id,o.nome,o.data_operacao);const result=await api(`pesagens?id=eq.${id}&atualizada_em=eq.${encodeURIComponent(r.updated)}`,{method:'DELETE'});if(!result.length)throw Error('Este lançamento foi alterado ou excluído por outro colega. Atualize e confira.');if(r.pallet||recordKind(r)==='PALLET')await savePalletMetaForOp(o.id,id,null);await refresh();if(destDetail&&!op()?.records.some(x=>x.dest===destDetail.dest))closeActiveDetailModal();if(specialDetail&&!specialRecords(op(),specialDetail.kind).length)closeActiveDetailModal();toast('Lançamento excluído.')}catch(e){toast(errorMessage(e));await refresh()}}
 function wizard(){const steps=palletMode?4:(category==='SACA'?2:3);const stepNo=palletMode?(stage+1):(dgMode?(stage===1?2:3):(category==='SACA'?(stage===1?1:2):stage));const titles=['','Qual é o destino?','Quantos volumes?','Qual é o peso?'];app.innerHTML=`<section class="step"><div class="stepin"><div class="stephead"><button class="back" id="prev">← ${stage===1?'Cancelar':'Voltar'}</button><span class="eyebrow">${edit?'EDITANDO':'INSERINDO'} ${esc(category||'PESO')} · ${stepNo} DE ${steps}</span><button class="plain" id="close" aria-label="Cancelar lançamento">✕</button></div><div class="progress">${Array.from({length:steps},(_,i)=>i+1).map(i=>`<i class="${i<=stepNo?'on':''}"></i>`).join('')}</div><h1>${titles[stage]}</h1>${dgMode?`<div class="dg-awb">INSERINDO DG · AWB ${esc(awb)} · 1 volume</div>`:palletMode?`<div class="dg-awb special-kind">${edit?'EDITANDO':'INSERINDO'} PALLET · AWB ${esc(awb)}</div>`:category==='SACA'?'<div class="dg-awb">SACA · 1 volume automático</div>':category==='CAIXA'?'<div class="dg-awb">CAIXA</div>':category==='DELIVERY'?'<div class="dg-awb special-kind">'+(edit?'EDITANDO':'INSERINDO')+' DELIVERY</div>':category==='COMAIL'?'<div class="dg-awb special-kind">'+(edit?'EDITANDO':'INSERINDO')+' COMAIL</div>':''}<p>${stage===1?'Busque e selecione um destino cadastrado.':stage===2?(palletMode?'Informe a quantidade de volumes do pallet.':'Informe a quantidade que está pesando.'):'Informe o peso total medido na balança.'}</p>${stage>1?`<div class="context"><span class="chip">↗ ${esc(chosen)}</span>${stage===3?`<span class="chip">${vol} volumes</span>`:''}</div>`:''}${stage===1?`<input id="search" class="input" placeholder="Digite o código ou a cidade" autocomplete="off" value="${esc(query)}"><div class="destlist" id="destlist"></div>${chosen?`<button class="primary wide confirm" id="nextStage1">OK · Continuar com ${esc(chosen)} →</button>`:''}`:`<div class="number" aria-live="polite">${esc(num||'0')}<span>${stage===2?'vol.':'kg'}</span></div><div class="keys">${['1','2','3','4','5','6','7','8','9',stage===3?',':'','0','⌫'].map(k=>k?`<button class="key ${k==='⌫'||k===','?'utility':''}" data-key="${k}" aria-label="${k==='⌫'?'Apagar último dígito':k}">${k}</button>`:'<div></div>').join('')}</div><button class="primary wide confirm" id="next" ${!(Number(num.replace(',','.'))>0)?'disabled':''}>${stage===2?'OK · Confirmar volumes →':'OK · Salvar pesagem ✓'}</button>`}</div></section>`;
 $('#close').onclick=()=>{if(saving)return;stage=0;render()};$('#prev').onclick=()=>{if(saving)return;if(stage===1){if((dgMode||palletMode)&&!edit){stage=0;scanScreen()}else{stage=0;render()}}else if(stage===2){stage=1;wizard()}else{draftKgStr=num;stage=(dgMode||category==='SACA')?1:2;num=String(vol);wizard()}};
 if(stage===1){list();$('#search').oninput=e=>{query=e.target.value;list()};if($('#nextStage1'))$('#nextStage1').onclick=next}else document.querySelectorAll('[data-key]').forEach(b=>b.onclick=()=>key(b.dataset.key));if($('#next'))$('#next').onclick=next;}
@@ -1481,6 +1731,7 @@ function destinationAllowed(code){if(category==='SACA')return code!=='BSBA CAIXA
 function list(){if(chosen&&!destinationAllowed(chosen)){chosen=''}const q=query.trim().toLocaleLowerCase();const found=destinations.filter(d=>destinationAllowed(d[0])&&d.join(' ').toLocaleLowerCase().includes(q));$('#destlist').innerHTML=found.map(([d,n])=>{const mInfo=resolveDestMalhaInfo(d);return `<button class="dest ${chosen===d?'selected':''}" data-dest="${d}"><span><b>${d}</b><small>${n}</small></span><span class="dest-right">${ciaLogoBadgeHtml(mInfo.cia)}${origBadgeHtml(mInfo.orig)}<span class="dest-arrow-ind">${chosen===d?'✓':'→'}</span></span></button>`}).join('')||'<div class="empty">Nenhum destino cadastrado encontrado.</div>';document.querySelectorAll('[data-dest]').forEach(b=>b.onclick=()=>{if(stage!==1||saving)return;chosen=b.dataset.dest;$('#search')?.blur();next()})}
 function key(k){if(saving)return;if(k==='⌫')num=num.slice(0,-1);else if(k===','){if(!num.includes(','))num=(num||'0')+','}else{if(num.replace(',','').length>=9)return;if(num.includes(',')&&num.split(',')[1].length>=3)return;num=num==='0'?k:num+k}if(stage===3)draftKgStr=num;wizard()}
 async function persistPesagemRecord(o,body,isPlt){
+  await ensureDbOperationOpenForWrite(o.id,o.nome,o.data_operacao);
   const trySave=async(payload)=>{
     if(edit){
       const result=await api(`pesagens?id=eq.${edit}&atualizada_em=eq.${encodeURIComponent(editVersion)}`,{method:'PATCH',body:{...payload,editado_por:selectedUser}});
