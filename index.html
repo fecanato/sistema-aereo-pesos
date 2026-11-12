@@ -406,7 +406,13 @@ const showDate=(d,nome)=>{
   if(m)return m[1];
   return d?d.slice(0,10).split('-').reverse().join('/'):'';
 };
-const showTime=t=>new Intl.DateTimeFormat('pt-BR',{hour:'2-digit',minute:'2-digit',timeZone:'America/Sao_Paulo'}).format(new Date(t));
+const showTime=t=>{
+  if(!t)return '';
+  if(typeof t==='string'&&/^\d{1,2}:\d{2}$/.test(t.trim()))return t.trim().padStart(5,'0');
+  const dt=new Date(t);
+  if(isNaN(dt.getTime()))return '';
+  return new Intl.DateTimeFormat('pt-BR',{hour:'2-digit',minute:'2-digit',timeZone:'America/Sao_Paulo'}).format(dt);
+};
 const cityNames={'IMPA':'Imperatriz','MCZA':'Maceió','MCPA':'Macapá','SLZA':'São Luís','THEA':'Teresina','FORA':'Fortaleza','FORA FORMAL':'Fortaleza · Formal','AJUA':'Aracaju','BVBA':'Boa Vista','MAOA':'Manaus','RECA':'Recife','VIXA':'Vitória','CGBA':'Cuiabá','CGRA':'Campo Grande','BELA':'Belém','PNZA':'Petrolina','SSAA':'Salvador','JDOA':'Juazeiro do Norte','PMWA':'Palmas','RBRA':'Rio Branco','JPAA':'João Pessoa','ITNA':'ITN / IOS / TXT','PVHA':'Porto Velho','NATA':'Natal','BSBA CAIXAS':'Brasília · Caixas','BSBA SACAS':'Brasília · Sacas','STMA':'Santarém','MABA':'Marabá','VDCA':'Vitória da Conquista','GYNA':'Goiânia','BRAA':'Barreiras'};
 let state={name:'',ops:[]},users=[],destinations=[],selectedUser=null,active=null,screen='login',historyView=false,loading=true,connected=false;
 let hasCategories=true,hasDelivery=true,hasComail=true,category=null;
@@ -418,13 +424,21 @@ let globalOperadoresList=['FELIPE','JAQUELINE','KAIO'];
 let globalUsuariosAuthDb={};
 function loadPesosGlobalAuthLocal(){
   try{
-    const ro=localStorage.getItem('sistema_aereo_operadores_lista_v1');
-    if(ro){const po=JSON.parse(ro);if(Array.isArray(po)&&po.length)globalOperadoresList=Array.from(new Set(po.map(x=>String(x||'').trim().toUpperCase()).filter(Boolean)))}
-  }catch{}
-  try{
     const ra=localStorage.getItem('sistema_aereo_usuarios_auth_v1');
     if(ra){const pa=JSON.parse(ra);if(pa&&typeof pa==='object')globalUsuariosAuthDb=pa}
   }catch{}
+  try{
+    const ro=localStorage.getItem('sistema_aereo_operadores_lista_v1');
+    if(ro){const po=JSON.parse(ro);if(Array.isArray(po)&&po.length)globalOperadoresList=Array.from(new Set(po.map(x=>String(x||'').trim().toUpperCase()).filter(Boolean)))}
+  }catch{}
+  globalOperadoresList=globalOperadoresList.filter(op=>{
+    const n=String(op||'').trim().toUpperCase();
+    return n&&!(globalUsuariosAuthDb[n]&&globalUsuariosAuthDb[n].excluido===true);
+  });
+  if(!globalOperadoresList.length){
+    globalOperadoresList=['FELIPE','JAQUELINE','KAIO'].filter(n=>!(globalUsuariosAuthDb[n]&&globalUsuariosAuthDb[n].excluido===true));
+    if(!globalOperadoresList.length)globalOperadoresList=['FELIPE'];
+  }
   globalOperadoresList.forEach(op=>{
     const n=String(op||'').trim().toUpperCase();
     const defEm=GP_DEFAULT_FEDEX_EMAILS[n]||'';
@@ -441,7 +455,7 @@ function savePesosGlobalAuthLocal(){
 }
 async function syncPesosGlobalAuthFromBridge(){
   try{
-    const res=await fetch('https://megozyczcjpqqozbdqrn.supabase.co/rest/v1/minutas?select=dados&id=eq.__SYS_CONFIG__',{headers:{apikey:SUITE_BRIDGE_KEY,Authorization:`Bearer ${SUITE_BRIDGE_KEY}`}});
+    const res=await fetch('https://megozyczcjpqqozbdqrn.supabase.co/rest/v1/minutas?select=dados&id=eq.__SYS_CONFIG__',{headers:{apikey:SUITE_BRIDGE_KEY,Authorization:`Bearer ${SUITE_BRIDGE_KEY}`},cache:'no-store'});
     if(res.ok){
       const rows=await res.json();
       if(Array.isArray(rows)&&rows[0]&&rows[0].dados){
@@ -453,17 +467,27 @@ async function syncPesosGlobalAuthFromBridge(){
           for(const [k,v] of Object.entries(d.usuarios_auth)){
             const n=String(k||v?.nome||'').trim().toUpperCase();
             if(!n)continue;
+            if(v&&v.excluido===true){
+              globalUsuariosAuthDb[n]={nome:n,senha:'',email:String(v.email||GP_DEFAULT_FEDEX_EMAILS[n]||''),excluido:true,atualizado_em:v.atualizado_em||Date.now()};
+              globalOperadoresList=globalOperadoresList.filter(o=>String(o||'').trim().toUpperCase()!==n);
+              continue;
+            }
             const loc=globalUsuariosAuthDb[n]||{};
             const defEm=GP_DEFAULT_FEDEX_EMAILS[n]||'';
             globalUsuariosAuthDb[n]={
               nome:n,
               senha:(v&&v.senha!==undefined)?String(v.senha||''):String(loc.senha||''),
               email:(v&&v.email&&String(v.email).trim()!=='')?String(v.email).trim().toLowerCase():String(loc.email||defEm),
+              excluido:false,
               atualizado_em:v?.atualizado_em||loc.atualizado_em||Date.now()
             };
-            if(!globalOperadoresList.includes(n)&&!v?.excluido)globalOperadoresList.push(n);
+            if(!globalOperadoresList.includes(n))globalOperadoresList.push(n);
           }
         }
+        globalOperadoresList=globalOperadoresList.filter(op=>{
+          const n=String(op||'').trim().toUpperCase();
+          return n&&!(globalUsuariosAuthDb[n]&&globalUsuariosAuthDb[n].excluido===true);
+        });
         savePesosGlobalAuthLocal();
       }
     }
@@ -488,11 +512,16 @@ async function pushPesosGlobalAuthToBridge(){
   }catch{}
 }
 function mergePesosUsersWithGlobal(dbUsers){
-  const list=Array.isArray(dbUsers)?[...dbUsers]:[];
+  const rawList=Array.isArray(dbUsers)?[...dbUsers]:[];
+  // Filtra usuários excluídos globalmente
+  const list=rawList.filter(u=>{
+    const n=String(u.nome||'').trim().toUpperCase();
+    return n&&!(globalUsuariosAuthDb[n]&&globalUsuariosAuthDb[n].excluido===true);
+  });
   const byName=new Map(list.map(u=>[String(u.nome||'').trim().toUpperCase(),u]));
   for(const opName of globalOperadoresList){
     const n=String(opName||'').trim().toUpperCase();
-    if(n&&!byName.has(n)){
+    if(n&&!byName.has(n)&&!(globalUsuariosAuthDb[n]&&globalUsuariosAuthDb[n].excluido===true)){
       const synth={id:'usr_'+n.toLowerCase(),nome:n,ativo:true};
       list.push(synth);
       byName.set(n,synth);
@@ -500,15 +529,40 @@ function mergePesosUsersWithGlobal(dbUsers){
   }
   return list;
 }
-function hasAuthenticatedPesosSession(userName){
-  const n=String(userName||'').trim().toUpperCase();
-  if(!n)return false;
-  const uAuth=globalUsuariosAuthDb[n];
-  if(!uAuth||!String(uAuth.senha||'').trim())return false;
+// Garante que usuários criados via ponte global ('usr_...') recebam um UUID real na tabela `usuarios` do banco de Pesos antes de salvar pesagens
+async function ensureRealPesosUserId(userIdOrName){
+  let uObj=users.find(u=>u.id===userIdOrName)||users.find(u=>String(u.nome||'').trim().toUpperCase()===String(userIdOrName||'').trim().toUpperCase());
+  const nomeUp=String(uObj?.nome||state.name||userIdOrName||'').trim().toUpperCase();
+  if(uObj&&uObj.id&&!String(uObj.id).startsWith('usr_'))return uObj.id;
+  if(!nomeUp)return selectedUser;
   try{
-    const s=JSON.parse(localStorage.getItem('sistema_aereo_sessao_autenticada_v1')||'null');
-    return Boolean(s&&String(s.nome||'').toUpperCase()===n);
-  }catch{return false}
+    const dbRows=await api(`usuarios?select=*&nome=eq.${encodeURIComponent(nomeUp)}&limit=1`);
+    if(Array.isArray(dbRows)&&dbRows[0]&&dbRows[0].id){
+      if(uObj)uObj.id=dbRows[0].id;
+      if(state.name&&String(state.name).trim().toUpperCase()===nomeUp)selectedUser=dbRows[0].id;
+      return dbRows[0].id;
+    }
+    const created=await api('usuarios',{method:'POST',body:{nome:nomeUp,ativo:true}});
+    if(Array.isArray(created)&&created[0]&&created[0].id){
+      if(uObj)uObj.id=created[0].id;
+      if(state.name&&String(state.name).trim().toUpperCase()===nomeUp)selectedUser=created[0].id;
+      return created[0].id;
+    }
+  }catch{
+    try{
+      const allU=await api('usuarios?select=*&ativo=eq.true&order=nome');
+      const match=allU.find(x=>String(x.nome||'').trim().toUpperCase()===nomeUp)||allU[0];
+      if(match&&match.id){
+        if(uObj)uObj.id=match.id;
+        if(state.name&&String(state.name).trim().toUpperCase()===nomeUp)selectedUser=match.id;
+        return match.id;
+      }
+    }catch{}
+  }
+  return uObj?.id||selectedUser;
+}
+function hasAuthenticatedPesosSession(){
+  return false;
 }
 let palletMetaByOp={};
 async function fetchPalletMetaForOp(opId){
@@ -518,11 +572,11 @@ async function fetchPalletMetaForOp(opId){
     if(localRaw)palletMetaByOp[opId]=JSON.parse(localRaw)||{};
   }catch{}
   try{
-    const res=await fetch(`https://megozyczcjpqqozbdqrn.supabase.co/rest/v1/minutas?select=dados&id=eq.__SYS_PESOS_PALLETS__${encodeURIComponent(opId)}`,{headers:{apikey:SUITE_BRIDGE_KEY,Authorization:`Bearer ${SUITE_BRIDGE_KEY}`}});
+    const res=await fetch(`https://megozyczcjpqqozbdqrn.supabase.co/rest/v1/minutas?select=dados&id=eq.__SYS_PESOS_PALLETS__${encodeURIComponent(opId)}`,{headers:{apikey:SUITE_BRIDGE_KEY,Authorization:`Bearer ${SUITE_BRIDGE_KEY}`},cache:'no-store'});
     if(res.ok){
       const rows=await res.json();
       if(rows&&rows[0]&&rows[0].dados&&rows[0].dados.byId){
-        palletMetaByOp[opId]={...(palletMetaByOp[opId]||{}),...rows[0].dados.byId};
+        palletMetaByOp[opId]=rows[0].dados.byId;
         try{localStorage.setItem('peso_pallet_meta_'+opId,JSON.stringify(palletMetaByOp[opId]))}catch{}
       }
     }
@@ -536,6 +590,10 @@ async function savePalletMetaForOp(opId,recId,metaObj){
   if(metaObj===null)delete palletMetaByOp[opId][recId];
   else palletMetaByOp[opId][recId]=metaObj;
   try{localStorage.setItem('peso_pallet_meta_'+opId,JSON.stringify(palletMetaByOp[opId]))}catch{}
+  const rtEvent={type:'PALLET_META_UPDATED',operacao_id:opId,byId:palletMetaByOp[opId],ts:Date.now()};
+  try{const bc=new BroadcastChannel('fedex_aereo_pesos_channel');bc.postMessage(rtEvent);bc.close()}catch{}
+  try{const bc2=new BroadcastChannel('fedex_aereo_minutas_channel');bc2.postMessage(rtEvent);bc2.close()}catch{}
+  try{if(window.suiteBridgeRealtimeChannel)window.suiteBridgeRealtimeChannel.send({type:'broadcast',event:'PALLET_META_UPDATED',payload:rtEvent})}catch{}
   try{
     await fetch(`https://megozyczcjpqqozbdqrn.supabase.co/rest/v1/minutas?on_conflict=id`,{
       method:'POST',
@@ -945,7 +1003,7 @@ function applyCorrectionsToOperationRecords(operation) {
             dg: false,
             pallet: false,
             type: 'NORMAL',
-            category: 'CAIXA',
+            category: corr.cat || 'CAIXA',
             awb: null,
             user: 'Correção IA',
             time: corr.fromTime || '',
@@ -1056,6 +1114,10 @@ function applyCorrectionsToOperationRecords(operation) {
 async function clearCorrectionsForActiveOp() {
   const o = op();
   if (!o) return;
+  if (o.status !== 'ABERTA') {
+    toast('Esta operação está finalizada (Modo Consulta). Reabra a operação para alterar correções.');
+    return;
+  }
   const activeCount = Array.isArray(o.corrections) ? o.corrections.length : 0;
   if (activeCount === 0) {
     toast('Nenhuma correção da IA ativa nesta operação no momento.');
@@ -1140,7 +1202,13 @@ function unlockAudio(){try{const Ctx=window.AudioContext||window.webkitAudioCont
 function playScanBeep(){try{const Ctx=window.AudioContext||window.webkitAudioContext;if(!Ctx)return;if(!audioCtx)audioCtx=new Ctx();if(audioCtx.state==='suspended')audioCtx.resume();const now=audioCtx.currentTime,osc=audioCtx.createOscillator(),gain=audioCtx.createGain();osc.type='sine';osc.frequency.setValueAtTime(1850,now);osc.frequency.setValueAtTime(2450,now+0.045);gain.gain.setValueAtTime(0.18,now);gain.gain.exponentialRampToValueAtTime(0.001,now+0.12);osc.connect(gain);gain.connect(audioCtx.destination);osc.start(now);osc.stop(now+0.12)}catch{}}
 function catBadgeHtml(kind){const label=kind==='SEM_CLASSIFICACAO'?'Sem classificação':kind;return `<span class="cat-badge cat-${esc(kind)}">${esc(label)}</span>`}
 
-try{selectedUser=localStorage.getItem('peso-equipe-user')}catch{}
+// Sempre inicia exigindo senha ao abrir o site
+try{
+  localStorage.removeItem('peso-equipe-user');
+  localStorage.removeItem('sistema_aereo_usuario');
+  localStorage.removeItem('sistema_aereo_sessao_autenticada_v1');
+}catch{}
+selectedUser=null;
 const op=()=>state.ops.find(o=>o.id===active);
 function sum(rs){let volumes=0,grams=0;for(const r of rs){if(r.naoContabiliza)continue;volumes+=r.vol;grams+=Math.round(r.kg*1000)}return {vol:volumes,kg:grams/1000}}
 function grouped(rs){const groups={};for(const r of rs){groups[r.dest]??=[];groups[r.dest].push(r)}return Object.entries(groups).map(([d,rows])=>[d,sum(rows)]).sort(([a],[b])=>a.localeCompare(b))}
@@ -1153,8 +1221,24 @@ function isFlow(){return stage>0||scanning||saving}
 function safeRender(){if(!isFlow()&&!document.querySelector('.modal'))render();if(specialDetail)updateSpecialDetail();if(destDetail)updateDestDetail()}
 try { localStorage.removeItem('peso_multi_active_ops_v1'); } catch {}
 
-// Garante compatibilidade caso alguma chamada legada invoque ensureDbOperationOpenForWrite
+// Valida em tempo real se a operação continua ABERTA no banco antes de permitir escrita/edição/exclusão
 async function ensureDbOperationOpenForWrite(opId) {
+  const targetId = opId || active;
+  if (!targetId) throw Error('Nenhuma operação selecionada.');
+  const localOp = state.ops.find(o => o.id === targetId);
+  if (localOp && localOp.status !== 'ABERTA') {
+    throw Error('Esta operação já está finalizada (Modo Consulta). Reabra a operação se precisar alterar lançamentos.');
+  }
+  try {
+    const rows = await api(`operacoes?select=id,status&id=eq.${encodeURIComponent(targetId)}&limit=1`);
+    if (Array.isArray(rows) && rows[0] && rows[0].status && rows[0].status !== 'ABERTA') {
+      if (localOp) localOp.status = rows[0].status;
+      safeRender();
+      throw Error('Esta operação acabou de ser finalizada por outro colega. Os lançamentos estão bloqueados.');
+    }
+  } catch (e) {
+    if (e.message && e.message.includes('finalizada')) throw e;
+  }
   return true;
 }
 
@@ -1189,6 +1273,8 @@ function mapRawRowsToOperationRecords(rows, pMeta) {
     const rawAwb = String(r.awb || '');
     const isPlt = r.tipo === 'PALLET' || r.categoria === 'PALLET' || rawAwb.startsWith('PALLET:') || Boolean(m);
     const cleanAwb = isPlt ? (m?.awb || rawAwb.replace(/^PALLET:/i, '') || r.awb) : r.awb;
+    const effectiveCreated = (isPlt && m?.criada_em) ? m.criada_em : r.criada_em;
+    const effectiveTime = (isPlt && m?.horario) ? m.horario : showTime(effectiveCreated);
     return {
       id: r.id,
       dest: r.destino,
@@ -1199,11 +1285,11 @@ function mapRawRowsToOperationRecords(rows, pMeta) {
       type: isPlt ? 'PALLET' : r.tipo,
       category: isPlt ? 'PALLET' : (r.tipo === 'DG' ? 'DG' : ['DELIVERY', 'COMAIL'].includes(r.tipo) ? r.tipo : (r.categoria || null)),
       awb: cleanAwb,
-      user: users.find(u => u.id === r.usuario_id)?.nome || 'Usuário',
+      user: users.find(u => u.id === r.usuario_id)?.nome || m?.user || 'Usuário',
       editor: users.find(u => u.id === r.editado_por)?.nome,
       updated: r.atualizada_em,
-      created: r.criada_em,
-      time: showTime(r.criada_em)
+      created: effectiveCreated,
+      time: effectiveTime
     };
   });
 }
@@ -1211,8 +1297,11 @@ function mapRawRowsToOperationRecords(rows, pMeta) {
 async function loadOperations(){
   const rows = await api('operacoes?select=*&order=criada_em.desc&limit=35');
   const previous = new Map(state.ops.map(o => [o.id, o]));
+  const agora = Date.now();
+  const limite48h = 48 * 60 * 60 * 1000;
   let foundOpen = false;
-  state.ops = rows.map(r => {
+  const validOps = [];
+  for (const r of rows) {
     const resolvedIso = resolveOpIsoDate(r);
     let effectiveStatus = r.status;
     if (effectiveStatus === 'ABERTA') {
@@ -1222,6 +1311,11 @@ async function loadOperations(){
         effectiveStatus = 'FINALIZADA';
         api(`operacoes?id=eq.${encodeURIComponent(r.id)}`, { method: 'PATCH', body: { status: 'FINALIZADA' } }).catch(() => {});
       }
+    } else if (effectiveStatus === 'FINALIZADA') {
+      const refFin = r.finalizada_em ? new Date(r.finalizada_em).getTime() : (r.atualizada_em ? new Date(r.atualizada_em).getTime() : 0);
+      if (refFin > 0 && (agora - refFin > limite48h)) {
+        continue;
+      }
     }
     let cachedRecs = previous.get(r.id)?.rawRecords || [];
     if (!cachedRecs.length) {
@@ -1230,17 +1324,32 @@ async function loadOperations(){
         if (cr) cachedRecs = JSON.parse(cr) || [];
       } catch {}
     }
-    return {
+    let cachedCorrs = previous.get(r.id)?.corrections || [];
+    if (!cachedCorrs.length) {
+      try {
+        const cc = localStorage.getItem('peso_correcoes_ia_' + r.id);
+        if (cc) {
+          const parsedC = JSON.parse(cc);
+          if (parsedC && !parsedC.cleared && Array.isArray(parsedC.corrections)) cachedCorrs = parsedC.corrections;
+        }
+      } catch {}
+    }
+    const opEntry = {
       ...r,
       status: effectiveStatus,
       data_operacao: resolvedIso,
       date: showDate(resolvedIso, r.nome),
       rawRecords: cachedRecs,
-      corrections: previous.get(r.id)?.corrections || [],
+      corrections: cachedCorrs,
       records: previous.get(r.id)?.records?.length ? previous.get(r.id).records : cachedRecs,
       loaded: Boolean(previous.get(r.id)?.loaded || cachedRecs.length > 0)
     };
-  });
+    if (opEntry.rawRecords.length > 0 && !previous.get(r.id)?.records?.length) {
+      applyCorrectionsToOperationRecords(opEntry);
+    }
+    validOps.push(opEntry);
+  }
+  state.ops = validOps;
   try {
     const slimOps = state.ops.map(o => ({ id: o.id, nome: o.nome, status: o.status, data_operacao: o.data_operacao, date: o.date, finalizada_em: o.finalizada_em, criada_em: o.criada_em }));
     localStorage.setItem('peso_ops_cache_v1', JSON.stringify(slimOps));
@@ -1262,37 +1371,84 @@ async function loadRecords(id){
   const rows = await allRows(`pesagens?select=*&operacao_id=eq.${encodeURIComponent(id)}&order=criada_em.asc,id.asc`);
   if (epoch !== recordEpoch || id !== active) return;
 
+  const prevLocalMetaJson = JSON.stringify(localPalletMeta || {});
+  const prevLocalCorrsJson = JSON.stringify(operation.corrections || []);
+
   operation.rawRecords = mapRawRowsToOperationRecords(rows, localPalletMeta);
   applyCorrectionsToOperationRecords(operation);
   operation.loaded = true;
   try { localStorage.setItem('peso_records_cache_' + id, JSON.stringify(operation.rawRecords)); } catch {}
   safeRender();
 
-  // 2) Busca em background (sem travar a tela) metadados extras de Pallet e correções da IA na ponte
+  // 2) Busca em background (sem travar a tela) metadados extras de Pallet e correções da IA na ponte, re-renderizando APENAS se houver mudança real
   Promise.all([
     fetchPalletMetaForOp(id).catch(() => localPalletMeta),
     fetchCorrectionsForOp(operation).catch(() => operation.corrections || [])
   ]).then(([pMeta, corrs]) => {
     if (epoch !== recordEpoch || id !== active) return;
-    operation.rawRecords = mapRawRowsToOperationRecords(rows, pMeta);
-    operation.corrections = corrs || [];
-    applyCorrectionsToOperationRecords(operation);
-    try { localStorage.setItem('peso_records_cache_' + id, JSON.stringify(operation.rawRecords)); } catch {}
-    safeRender();
+    const newMetaJson = JSON.stringify(pMeta || {});
+    const newCorrsJson = JSON.stringify(corrs || []);
+    if (newMetaJson !== prevLocalMetaJson || newCorrsJson !== prevLocalCorrsJson) {
+      operation.rawRecords = mapRawRowsToOperationRecords(rows, pMeta);
+      operation.corrections = corrs || [];
+      applyCorrectionsToOperationRecords(operation);
+      try { localStorage.setItem('peso_records_cache_' + id, JSON.stringify(operation.rawRecords)); } catch {}
+      safeRender();
+    }
   });
 }
 
 async function detectCategories(){try{await api('pesagens?select=categoria&limit=0');hasCategories=true}catch(e){if(e.code==='42703'||e.code==='PGRST204')hasCategories=false;else throw e}}
 async function detectDelivery(){try{hasDelivery=await api('rpc/peso_delivery_habilitado',{method:'POST',body:{}})===true}catch(e){if(e.code==='PGRST202'||e.code==='42883')hasDelivery=false;else throw e}}
 async function detectComail(){try{hasComail=await api('rpc/peso_comail_habilitado',{method:'POST',body:{}})===true}catch(e){if(e.code==='PGRST202'||e.code==='42883')hasComail=false;else throw e}}
-async function refresh(){try{syncMalhaDirectFromDb();await loadOperations();if(active&&op())await loadRecords(active);if(active&&!op()){active=null;screen='ops';if(!isFlow())toast('Esta operação já foi excluída pelo prazo de retenção.')}connected=true;safeRender()}catch(e){connected=false;safeRender();}}
-function scheduleRefresh(){clearTimeout(refreshTimer);refreshTimer=setTimeout(refresh,350)}
+let _refreshInFlight = false;
+async function refresh(){
+  if (_refreshInFlight) return;
+  _refreshInFlight = true;
+  try{
+    await loadOperations();
+    if(active&&op())await loadRecords(active);
+    if(active&&!op()){active=null;screen='ops';if(!isFlow())toast('Esta operação já foi excluída pelo prazo de retenção.')}
+    connected=true;
+    safeRender();
+  }catch(e){
+    connected=false;
+    safeRender();
+  }finally{
+    _refreshInFlight = false;
+  }
+}
+function scheduleRefresh(){clearTimeout(refreshTimer);refreshTimer=setTimeout(refresh,300)}
 function watchRecords(id){if(!realtime)return;if(recordChannel)realtime.removeChannel(recordChannel);live=false;recordChannel=realtime.channel('pesagens-'+id).on('postgres_changes',{event:'*',schema:'public',table:'pesagens',filter:'operacao_id=eq.'+id},scheduleRefresh).subscribe(status=>{live=status==='SUBSCRIBED';if(!isFlow())safeRender()})}
 function handleIncomingBridgePayload(data){
   if(!data)return;
   if(data.type==='MALHA_ATUALIZADA'&&Array.isArray(data.malha)){
     savePesosMalhaLocalCache(data.malha);
     if(stage===1&&$('#destlist'))list();
+    return;
+  }
+  if(data.type==='OPERACAO_FINALIZADA_REALTIME'){
+    scheduleRefresh();
+    return;
+  }
+  if(data.type==='PALLET_META_UPDATED'&&data.operacao_id&&data.byId){
+    palletMetaByOp[data.operacao_id]=data.byId;
+    try{localStorage.setItem('peso_pallet_meta_'+data.operacao_id,JSON.stringify(data.byId))}catch{}
+    const targetOp=state.ops.find(x=>String(x.id)===String(data.operacao_id));
+    if(targetOp&&Array.isArray(targetOp.rawRecords)){
+      scheduleRefresh();
+    }
+    return;
+  }
+  if(data.type==='CORRECOES_LIMPAS_NO_PESOS'){
+    const targetOp = data.operacao_id
+      ? state.ops.find(x => String(x.id) === String(data.operacao_id))
+      : op();
+    if(targetOp){
+      targetOp.corrections = [];
+      applyCorrectionsToOperationRecords(targetOp);
+      safeRender();
+    }
     return;
   }
   const p=data.payload||data;
@@ -1325,28 +1481,38 @@ function setupRealtime(){
     const bc2=new BroadcastChannel('fedex_aereo_minutas_channel');
     bc2.onmessage=ev=>handleIncomingBridgePayload(ev.data);
   }catch{}
+  window.addEventListener('storage',ev=>{
+    if(!ev.key||!ev.newValue)return;
+    if(ev.key.startsWith('peso_correcoes_ia_')){
+      try{handleIncomingBridgePayload({type:'PESOS_CORRECOES_IA',payload:JSON.parse(ev.newValue)})}catch{}
+    }else if(ev.key.startsWith('peso_pallet_meta_')){
+      const opId=ev.key.replace('peso_pallet_meta_','');
+      try{handleIncomingBridgePayload({type:'PALLET_META_UPDATED',operacao_id:opId,byId:JSON.parse(ev.newValue)})}catch{}
+    }
+  });
   if(!window.supabase)return;
   realtime=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY,{auth:{persistSession:false,autoRefreshToken:false,detectSessionInUrl:false}});
   realtime.channel('operacoes-equipe').on('postgres_changes',{event:'*',schema:'public',table:'operacoes'},scheduleRefresh).subscribe(s=>{opsLive=s==='SUBSCRIBED'});
-  realtime.channel('usuarios-equipe').on('postgres_changes',{event:'*',schema:'public',table:'usuarios'},async()=>{try{users=await api('usuarios?select=*&ativo=eq.true&order=nome');safeRender()}catch{}}).subscribe();
+  realtime.channel('usuarios-equipe').on('postgres_changes',{event:'*',schema:'public',table:'usuarios'},async()=>{try{const u=await api('usuarios?select=*&ativo=eq.true&order=nome');users=mergePesosUsersWithGlobal(u);safeRender()}catch{}}).subscribe();
   try{
     const bridgeClient=window.supabase.createClient(SUITE_BRIDGE_URL,SUITE_BRIDGE_KEY,{auth:{persistSession:false,autoRefreshToken:false,detectSessionInUrl:false}});
     window.suiteBridgeRealtimeChannel=bridgeClient.channel('fedex-aereo-minutas-sync',{config:{broadcast:{self:false}}})
       .on('broadcast',{event:'MALHA_ATUALIZADA'},payload=>handleIncomingBridgePayload(payload.payload))
       .on('broadcast',{event:'PESOS_CORRECOES_IA'},payload=>handleIncomingBridgePayload(payload.payload))
+      .on('broadcast',{event:'CORRECOES_LIMPAS_NO_PESOS'},payload=>handleIncomingBridgePayload(payload.payload))
+      .on('broadcast',{event:'PALLET_META_UPDATED'},payload=>handleIncomingBridgePayload(payload.payload))
+      .on('broadcast',{event:'OPERACAO_FINALIZADA_REALTIME'},payload=>handleIncomingBridgePayload(payload.payload))
       .on('postgres_changes',{event:'*',schema:'public',table:'malha'},()=>syncMalhaDirectFromDb())
       .subscribe();
   }catch{}
 }
 async function boot(){
   hydrateCachedOpsAndRecords();
-  const savedGlobalName=(localStorage.getItem('sistema_aereo_usuario')||'').trim().toUpperCase();
-  if(users.length&&state.ops.length){
-    let cachedUser=users.find(u=>u.id===selectedUser)||(savedGlobalName?users.find(u=>String(u.nome||'').toUpperCase()===savedGlobalName):null);
-    if(cachedUser&&hasAuthenticatedPesosSession(cachedUser.nome)){
-      selectedUser=cachedUser.id;state.name=cachedUser.nome;screen='ops';loading=false;connected=true;
-    }
-  }
+  // Sempre abre na tela de Login para exigir senha toda vez que o site é aberto
+  selectedUser=null;
+  state.name='';
+  screen='login';
+  if(users.length)loading=false;
   render();
   // Tarefas secundárias em background (não bloqueiam a abertura da tela!)
   syncPesosGlobalAuthFromBridge().then(()=>{users=mergePesosUsersWithGlobal(users);safeRender()}).catch(()=>{});
@@ -1366,14 +1532,8 @@ async function boot(){
       localStorage.setItem('peso_users_cache_v1',JSON.stringify(u));
       localStorage.setItem('peso_dest_cache_v1',JSON.stringify(destinations));
     }catch{}
-    let user=users.find(u=>u.id===selectedUser)||(savedGlobalName?users.find(u=>String(u.nome||'').toUpperCase()===savedGlobalName):null);
-    if(user&&hasAuthenticatedPesosSession(user.nome)){
-      selectedUser=user.id;
-      state.name=user.nome;
-      if(screen==='login')screen='ops';
-    }else if(!active){
+    if(!state.name){
       selectedUser=null;
-      state.name='';
       screen='login';
     }
     connected=true;
@@ -1487,13 +1647,13 @@ function openPesosAuthModal(userId){
     }
   };
 
-  const finishLogin=()=>{
-    selectedUser=uObj.id;
+  const finishLogin=async()=>{
     state.name=uObj.nome;
+    selectedUser=await ensureRealPesosUserId(uObj.id);
     try{
-      localStorage.setItem('peso-equipe-user',selectedUser);
-      localStorage.setItem('sistema_aereo_usuario',nomeUp);
-      localStorage.setItem('sistema_aereo_sessao_autenticada_v1',JSON.stringify({nome:nomeUp,ts:Date.now()}));
+      localStorage.removeItem('peso-equipe-user');
+      localStorage.removeItem('sistema_aereo_usuario');
+      localStorage.removeItem('sistema_aereo_sessao_autenticada_v1');
     }catch{}
     close();
     screen='ops';
@@ -1558,12 +1718,16 @@ function openPesosAuthModal(userId){
     bindEyeToggle('#gpToggleLoginPass','#gpLoginPass');
     const msgEl=body.querySelector('#gpAuthMsg');
     const showMsg=(t,ok)=>{msgEl.textContent=t;msgEl.style.display='block';msgEl.style.background=ok?'rgba(16,185,129,.15)':'rgba(239,68,68,.15)';msgEl.style.color=ok?'#10b981':'#ef4444'};
-    const doLogin=()=>{
-      const curAuth=globalUsuariosAuthDb[nomeUp]||uAuth;
+    const doLogin=async()=>{
       const dig=(body.querySelector('#gpLoginPass').value||'').trim();
       if(!dig)return showMsg('Digite sua senha para entrar.',false);
+      let curAuth=globalUsuariosAuthDb[nomeUp]||uAuth;
+      if(String(curAuth.senha||'').trim()!==dig){
+        await syncPesosGlobalAuthFromBridge();
+        curAuth=globalUsuariosAuthDb[nomeUp]||uAuth;
+      }
       if(String(curAuth.senha||'').trim()!==dig)return showMsg('Senha incorreta. Tente novamente ou clique em Esqueci a senha.',false);
-      finishLogin();
+      await finishLogin();
     };
     body.querySelector('#gpBtnLogin').onclick=doLogin;
     body.querySelector('#gpLoginPass').onkeydown=e=>{if(e.key==='Enter')doLogin()};
@@ -1601,7 +1765,7 @@ function openPesosAuthModal(userId){
 function render(){if(stage){wizard();return}if(scanning)return;if(loading){shell('<div class="empty">Conectando à operação da equipe…</div>');return}if(!connected&&!users.length){shell('<section class="login card"><h1>Vamos conectar?</h1><p>Não foi possível acessar o banco neste painel restrito. Confira sua conexão ou abra a demonstração para testar o histórico por destino.</p><button id="retry" class="primary wide">Tentar novamente</button><button id="demoBtn" class="secondary wide" style="margin-top:10px">Testar prévia com dados de exemplo →</button></section>');$('#retry').onclick=()=>{loading=true;boot()};$('#demoBtn').onclick=loadDemoMode;return}
 if(screen==='login'){loadPesosGlobalAuthLocal();users=mergePesosUsersWithGlobal(users);shell(`<section class="login"><span class="eyebrow">ACESSO AO SISTEMA</span><h1>Quem está pesando?</h1><p>Selecione seu nome para identificar os lançamentos.</p><div class="card user-list">${users.map(u=>{const nUp=String(u.nome||'').trim().toUpperCase();const hasP=Boolean(globalUsuariosAuthDb[nUp]?.senha&&String(globalUsuariosAuthDb[nUp].senha).trim().length>0);return `<button class="user-option" data-user="${esc(u.id)}"><span class="avatar">${esc(u.nome.slice(0,2))}</span><span style="display:flex;flex-direction:column;gap:2px"><b>${esc(u.nome)}</b>${hasP?'':'<small style="font-size:10px;font-weight:700;color:#f59e0b">1º Acesso</small>'}</span><span class="arrow">→</span></button>`}).join('')}</div></section>`);document.querySelectorAll('[data-user]').forEach(b=>b.onclick=()=>openPesosAuthModal(b.dataset.user));return}
 if(screen==='ops'){const open=state.ops.filter(o=>o.status==='ABERTA'),closed=state.ops.filter(o=>o.status==='FINALIZADA'),rows=historyView?closed:open;shell(`<div class="intro"><div><span class="eyebrow">SEU ESPAÇO DE TRABALHO</span><h1>Olá, ${esc(state.name)}.</h1><p>${historyView?'Operações finalizadas nas últimas 48 horas.':'Uma equipe. Uma operação. Todos os pesos.'}</p></div><button class="primary" id="create">＋ Criar operação</button></div><nav class="tabs"><button id="tabOpen" class="${!historyView?'active':''}">Em andamento (${open.length})</button><button id="tabHistory" class="${historyView?'active':''}">Histórico 48h (${closed.length})</button><button id="reload" class="tab-reload-btn" title="Atualizar operações" aria-label="Atualizar operações">↻</button></nav>${rows.map(o=>o.status==='ABERTA'?`<button class="op" data-op="${esc(o.id)}"><div><span class="green">● Em andamento</span><strong>${esc(o.nome)}</strong><span class="small muted">${esc(o.date)} · Entrar para lançar e conferir pesos</span></div><span class="arrow">→</span></button>`:`<div class="op op-history-card"><div class="op-history-info" data-op="${esc(o.id)}"><strong>${esc(o.nome)}</strong><span class="small muted">Finalizada • No histórico por 48h${o.finalizada_em?' · Finalizada às '+showTime(o.finalizada_em):(o.date?' · '+esc(o.date):'')}</span></div><div class="op-history-actions"><button type="button" class="btn-reopen-op" data-reopen-op="${esc(o.id)}">Reabrir operação</button><button type="button" class="btn-consult-op" data-op="${esc(o.id)}">Consultar →</button></div></div>`).join('')||`<div class="card empty">${historyView?'Nenhuma operação no histórico de 48h.':'Nenhuma operação aberta. Crie a operação do dia para começar.'}</div>`}`);$('#create').onclick=create;$('#tabOpen').onclick=()=>{historyView=false;render()};$('#tabHistory').onclick=()=>{historyView=true;render()};$('#reload').onclick=refresh;document.querySelectorAll('[data-op]').forEach(b=>b.onclick=()=>enterOperation(b.dataset.op));document.querySelectorAll('[data-reopen-op]').forEach(b=>b.onclick=e=>{e.stopPropagation();reopenFromHistory(b.dataset.reopenOp)});return}
-const o=op();if(!o){screen='ops';render();return}const t=sum(o.records),closed=o.status==='FINALIZADA';shell(`<button class="back" id="back">← Todas as operações</button><div class="intro"><div><span class="eyebrow">${esc(o.date)} · ${closed?'OPERAÇÃO FINALIZADA':'OPERAÇÃO EM ANDAMENTO'}</span><h1>${esc(o.nome)}</h1><p>${closed?'Relatório disponível. Reabra para corrigir lançamentos.':'Pesagens reunidas por destino.'}</p></div>${closed?'':`<div class="operation-actions priority-actions">${hasCategories?`<div class="main-types"><button class="primary" id="insertBox" ${!o.loaded?'disabled':''}><svg class="type-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="M3 8v10l9 5 9-5V8M12 13v10M7.5 5.5l9 5v4"/></svg><span>INSERIR CAIXA</span></button><button class="primary" id="insertBag" ${!o.loaded?'disabled':''}><svg class="type-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M8 3h8l-2 4h-4L8 3Z"/><path d="M9 7h6M10 7C9 10 4 13 4 18c0 3 3 4 8 4s8-1 8-4c0-5-5-8-6-11"/><path d="m14 8 3 2M9 16c0-2 1-3 2-4"/></svg><span>INSERIR SACA</span></button></div><div class="other-types-label">OUTROS TIPOS</div><div class="special-types"><button class="secondary" id="insertdg" ${!o.loaded?'disabled':''}>DG</button><button class="secondary" id="insertPallet" ${!o.loaded?'disabled':''}>PALLET</button>${hasDelivery?`<button class="secondary" id="insertDelivery" ${!o.loaded?'disabled':''}>DELIVERY</button>`:''}${hasComail?`<button class="secondary" id="insertComail" ${!o.loaded?'disabled':''}>COMAIL</button>`:''}</div>`:`<button class="primary" id="insert" ${!o.loaded?'disabled':''}>＋ Inserir peso</button><button class="secondary" id="insertdg" ${!o.loaded?'disabled':''}>▣ INSERIR DG</button><button class="secondary" id="insertPallet" ${!o.loaded?'disabled':''}>▣ INSERIR PALLET</button>`}</div>`}</div>${!connected?'<div class="connection-warning">Sem conexão: os valores exibidos podem estar desatualizados.</div>':''}<div class="stats"><div class="card stat"><span>Volumes pesados</span><strong>${t.vol}</strong></div><div class="card stat"><span>Peso total · kg</span><strong>${fmt(t.kg)}</strong></div><div class="card stat"><span>Lançamentos</span><strong>${o.records.length}</strong></div></div>${specialStatsHtml(o)}<div class="toolbar"><button class="secondary" id="export" ${!o.loaded?'disabled':''}>↓ Exportar Excel</button><button class="plain" id="reload">↻ Atualizar</button><button class="${closed?'secondary':'plain'}" id="statusAction">${closed?'Reabrir operação':'Finalizar operação'}</button></div><div class="board-switcher"><div class="board-tabs" role="tablist"><button type="button" class="board-tab ${boardTab==='dest'?'active':''}" id="tabBoardDest">Totais por destino (${grouped(o.records).length})</button><button type="button" class="board-tab ${boardTab==='recent'?'active':''}" id="tabBoardRecent">Últimos lançamentos (${o.records.length})</button></div><div class="swipe-hint">← Deslize para o lado para alternar entre as listas →</div></div><div class="grid swipe-grid" id="boardGrid"><section class="card board-panel ${boardTab==='dest'?'':'hidden-mobile'}"><div class="sectionhead"><h2>Totais por destino</h2><span class="chip" id="destCountBadge">${grouped(o.records).length} praças · kg</span></div><div class="filter-bar"><input type="search" id="destSummarySearch" class="input filter-search" placeholder="Buscar código ou cidade (ex.: BELA, Manaus)…" autocomplete="off" value="${esc(destSummaryQuery)}"></div><div id="destSummaryListContainer">${renderDestSummaryRows(o)}</div><div class="total"><span>Total geral</span><span>${fmt(t.kg)} kg</span></div><button type="button" id="btnClearCorrections" class="btn-clear-corr ${(o.corrections&&o.corrections.length)?'':'idle'}"><span>↺ Limpar correção${(o.corrections&&o.corrections.length)?` (${o.corrections.length} ativa${o.corrections.length>1?'s':''})`:''}</span></button></section><section class="card board-panel ${boardTab==='recent'?'':'hidden-mobile'}"><div class="sectionhead"><h2>Últimos lançamentos</h2><span class="small muted" id="recentCountLabel">Mais recentes</span></div><div class="filter-bar"><input type="search" id="recordSearch" class="input filter-search" placeholder="Buscar destino, AWB ou colega…" autocomplete="off" value="${esc(recentQuery)}"><div class="filter-chips">${[['ALL','Todos'],['CAIXA','CAIXA'],['SACA','SACA'],['PALLET','PALLET'],['DG','DG'],['DELIVERY','DELIVERY'],['COMAIL','COMAIL']].map(([k,label])=>`<button type="button" class="filter-chip ${recentFilter===k?'active':''}" data-filter-kind="${k}">${label}</button>`).join('')}</div></div><div id="recentListContainer">${renderRecentRows(o,closed)}</div></section></div>`);
+const o=op();if(!o){screen='ops';render();return}const t=sum(o.records),closed=o.status==='FINALIZADA';shell(`<button class="back" id="back">← Todas as operações</button><div class="intro"><div><span class="eyebrow">${esc(o.date)} · ${closed?'OPERAÇÃO FINALIZADA':'OPERAÇÃO EM ANDAMENTO'}</span><h1>${esc(o.nome)}</h1><p>${closed?'Relatório disponível. Reabra para corrigir lançamentos.':'Pesagens reunidas por destino.'}</p></div>${closed?'':`<div class="operation-actions priority-actions">${hasCategories?`<div class="main-types"><button class="primary" id="insertBox" ${!o.loaded?'disabled':''}><svg class="type-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="M3 8v10l9 5 9-5V8M12 13v10M7.5 5.5l9 5v4"/></svg><span>INSERIR CAIXA</span></button><button class="primary" id="insertBag" ${!o.loaded?'disabled':''}><svg class="type-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M8 3h8l-2 4h-4L8 3Z"/><path d="M9 7h6M10 7C9 10 4 13 4 18c0 3 3 4 8 4s8-1 8-4c0-5-5-8-6-11"/><path d="m14 8 3 2M9 16c0-2 1-3 2-4"/></svg><span>INSERIR SACA</span></button></div><div class="other-types-label">OUTROS TIPOS</div><div class="special-types"><button class="secondary" id="insertdg" ${!o.loaded?'disabled':''}>DG</button><button class="secondary" id="insertPallet" ${!o.loaded?'disabled':''}>PALLET</button>${hasDelivery?`<button class="secondary" id="insertDelivery" ${!o.loaded?'disabled':''}>DELIVERY</button>`:''}${hasComail?`<button class="secondary" id="insertComail" ${!o.loaded?'disabled':''}>COMAIL</button>`:''}</div>`:`<button class="primary" id="insert" ${!o.loaded?'disabled':''}>＋ Inserir peso</button><button class="secondary" id="insertdg" ${!o.loaded?'disabled':''}>▣ INSERIR DG</button><button class="secondary" id="insertPallet" ${!o.loaded?'disabled':''}>▣ INSERIR PALLET</button>`}</div>`}</div>${!connected?'<div class="connection-warning">Sem conexão: os valores exibidos podem estar desatualizados.</div>':''}<div class="stats"><div class="card stat"><span>Volumes pesados</span><strong>${t.vol}</strong></div><div class="card stat"><span>Peso total · kg</span><strong>${fmt(t.kg)}</strong></div><div class="card stat"><span>Lançamentos</span><strong>${o.records.length}</strong></div></div>${specialStatsHtml(o)}<div class="toolbar"><button class="secondary" id="export" ${!o.loaded?'disabled':''}>↓ Exportar Excel</button><button class="plain" id="reload">↻ Atualizar</button><button class="${closed?'secondary':'plain'}" id="statusAction">${closed?'Reabrir operação':'Finalizar operação'}</button></div><div class="board-switcher"><div class="board-tabs" role="tablist"><button type="button" class="board-tab ${boardTab==='dest'?'active':''}" id="tabBoardDest">Totais por destino (${grouped(o.records).length})</button><button type="button" class="board-tab ${boardTab==='recent'?'active':''}" id="tabBoardRecent">Últimos lançamentos (${o.records.length})</button></div><div class="swipe-hint">← Deslize para o lado para alternar entre as listas →</div></div><div class="grid swipe-grid" id="boardGrid"><section class="card board-panel ${boardTab==='dest'?'':'hidden-mobile'}"><div class="sectionhead"><h2>Totais por destino</h2><span class="chip" id="destCountBadge">${grouped(o.records).length} praças · kg</span></div><div class="filter-bar"><input type="search" id="destSummarySearch" class="input filter-search" placeholder="Buscar código ou cidade (ex.: BELA, Manaus)…" autocomplete="off" value="${esc(destSummaryQuery)}"></div><div id="destSummaryListContainer">${renderDestSummaryRows(o)}</div><div class="total"><span>Total geral</span><span>${fmt(t.kg)} kg</span></div>${closed?'':`<button type="button" id="btnClearCorrections" class="btn-clear-corr ${(o.corrections&&o.corrections.length)?'':'idle'}"><span>↺ Limpar correção${(o.corrections&&o.corrections.length)?` (${o.corrections.length} ativa${o.corrections.length>1?'s':''})`:''}</span></button>`}</section><section class="card board-panel ${boardTab==='recent'?'':'hidden-mobile'}"><div class="sectionhead"><h2>Últimos lançamentos</h2><span class="small muted" id="recentCountLabel">Mais recentes</span></div><div class="filter-bar"><input type="search" id="recordSearch" class="input filter-search" placeholder="Buscar destino, AWB ou colega…" autocomplete="off" value="${esc(recentQuery)}"><div class="filter-chips">${[['ALL','Todos'],['CAIXA','CAIXA'],['SACA','SACA'],['PALLET','PALLET'],['DG','DG'],['DELIVERY','DELIVERY'],['COMAIL','COMAIL']].map(([k,label])=>`<button type="button" class="filter-chip ${recentFilter===k?'active':''}" data-filter-kind="${k}">${label}</button>`).join('')}</div></div><div id="recentListContainer">${renderRecentRows(o,closed)}</div></section></div>`);
 $('#back').onclick=()=>{screen='ops';active=null;if(recordChannel){realtime.removeChannel(recordChannel);recordChannel=null}render()};$('#reload').onclick=refresh;$('#statusAction').onclick=changeStatus;$('#export').onclick=exportExcel;if($('#btnClearCorrections'))$('#btnClearCorrections').onclick=clearCorrectionsForActiveOp;
 if($('#tabBoardDest'))$('#tabBoardDest').onclick=()=>{boardTab='dest';render()};
 if($('#tabBoardRecent'))$('#tabBoardRecent').onclick=()=>{boardTab='recent';render()};
@@ -1610,7 +1774,34 @@ if($('#recordSearch'))$('#recordSearch').oninput=e=>{recentQuery=e.target.value;
 document.querySelectorAll('[data-filter-kind]').forEach(b=>b.onclick=()=>{recentFilter=b.dataset.filterKind;document.querySelectorAll('[data-filter-kind]').forEach(x=>x.classList.toggle('active',x.dataset.filterKind===recentFilter));updateRecentList()});
 bindSwipeBoard();
 if(!closed){if(hasCategories){if(hasComail)$('#insertComail').onclick=()=>startDraft('COMAIL');if(hasDelivery)$('#insertDelivery').onclick=()=>startDraft('DELIVERY');$('#insertBox').onclick=()=>startDraft('CAIXA');$('#insertBag').onclick=()=>startDraft('SACA')}else $('#insert').onclick=()=>startDraft(null);$('#insertdg').onclick=()=>{unlockAudio();startDraft('DG')};if($('#insertPallet'))$('#insertPallet').onclick=()=>{unlockAudio();startDraft('PALLET')};bindRecordActions()}}
-async function enterOperation(id){active=id;screen='operation';render();watchRecords(id);try{await loadRecords(id);safeRender()}catch(e){toast(errorMessage(e));connected=false;safeRender()}}
+async function enterOperation(id){
+  active=id;
+  screen='operation';
+  const operation=state.ops.find(o=>o.id===id);
+  if(operation&&!operation.loaded){
+    try{
+      const cr=localStorage.getItem('peso_records_cache_'+id);
+      if(cr){
+        const parsed=JSON.parse(cr);
+        if(Array.isArray(parsed)){
+          operation.rawRecords=parsed;
+          applyCorrectionsToOperationRecords(operation);
+          operation.loaded=true;
+        }
+      }
+    }catch{}
+  }
+  render();
+  watchRecords(id);
+  try{
+    await loadRecords(id);
+    safeRender();
+  }catch(e){
+    toast(errorMessage(e));
+    connected=false;
+    safeRender();
+  }
+}
 function modal(html){const layer=document.createElement('div');layer.className='modal';layer.innerHTML=`<div class="card">${html}</div>`;document.body.append(layer);return layer}
 function filterDestGroups(records){const q=destSummaryQuery.trim().toLocaleLowerCase();const all=grouped(records);if(!q)return all;return all.filter(([d])=>`${d} ${cityNames[d]||''}`.toLocaleLowerCase().includes(q))}
 function destCorrectionSummaryHtml(destRows){
@@ -1660,7 +1851,7 @@ function updateDestDetail(){if(!destDetail)return;const operation=state.ops.find
 function showDestDetail(dest){const operation=op();if(!operation?.loaded||!dest||destDetail||specialDetail)return;const city=cityNames[dest]&&cityNames[dest]!==dest?` · ${cityNames[dest]}`:'';const layer=modal(`<div role="dialog" aria-modal="true" aria-labelledby="destDetailTitle"><div class="sectionhead"><h2 id="destDetailTitle">${esc(dest)}${esc(city)}</h2><button class="plain" id="closeDestDetail" aria-label="Fechar histórico do destino">✕</button></div><div id="destDetailBody"></div></div>`);const previous=document.activeElement;const close=()=>{document.removeEventListener('keydown',onKey);layer.remove();destDetail=null;safeRender();const target=document.querySelector('[data-dest-detail="'+CSS.escape(dest)+'"]');(target||previous)?.focus()};const onKey=e=>{if(e.key==='Escape')close();if(e.key==='Tab'){e.preventDefault();layer.querySelector('#closeDestDetail').focus()}};destDetail={layer,dest,operationId:operation.id,close};updateDestDetail();layer.querySelector('#closeDestDetail').onclick=close;layer.onclick=e=>{if(e.target===layer)close()};document.addEventListener('keydown',onKey);layer.querySelector('#closeDestDetail').focus()}
 document.addEventListener('click',event=>{const button=event.target.closest?.('[data-special-kind]');if(button&&!button.disabled){showSpecialDetail(button.dataset.specialKind);return}const destBtn=event.target.closest?.('[data-dest-detail]');if(destBtn&&!destBtn.disabled)showDestDetail(destBtn.dataset.destDetail)});
 async function ask(title,message,button='Confirmar'){return new Promise(resolve=>{const layer=modal(`<h2>${esc(title)}</h2><p>${esc(message)}</p><button class="primary wide" id="yes">${esc(button)}</button><button class="plain wide" id="no">Cancelar</button>`);const done=val=>{document.removeEventListener('keydown',onKey);layer.remove();resolve(val)};const onKey=e=>{if(e.key==='Escape')done(false)};document.addEventListener('keydown',onKey);layer.querySelector('#yes').onclick=()=>done(true);layer.querySelector('#no').onclick=()=>done(false)})}
-function addUser(){const layer=modal('<h2>Adicionar usuário</h2><form id="userForm"><label class="field" for="userName" style="margin-top:16px">Nome</label><input class="input" id="userName" required maxlength="60" autocomplete="off"><button class="primary wide" style="margin-top:14px" id="userSave">Cadastrar</button><button type="button" class="plain wide" id="cancelUser">Cancelar</button></form>');const close=()=>{document.removeEventListener('keydown',onKey);layer.remove()};const onKey=e=>{if(e.key==='Escape')close()};document.addEventListener('keydown',onKey);layer.querySelector('#cancelUser').onclick=close;layer.querySelector('#userForm').onsubmit=async e=>{e.preventDefault();const nome=layer.querySelector('#userName').value.trim().toUpperCase();if(!nome)return;const saveBtn=layer.querySelector('#userSave');saveBtn.disabled=true;try{await api('usuarios',{method:'POST',body:{nome}});users=await api('usuarios?select=*&ativo=eq.true&order=nome');close();render()}catch(error){saveBtn.disabled=false;toast(errorMessage(error))}}}
+function addUser(){const layer=modal('<h2>Adicionar usuário</h2><form id="userForm"><label class="field" for="userName" style="margin-top:16px">Nome</label><input class="input" id="userName" required maxlength="60" autocomplete="off"><button class="primary wide" style="margin-top:14px" id="userSave">Cadastrar</button><button type="button" class="plain wide" id="cancelUser">Cancelar</button></form>');const close=()=>{document.removeEventListener('keydown',onKey);layer.remove()};const onKey=e=>{if(e.key==='Escape')close()};document.addEventListener('keydown',onKey);layer.querySelector('#cancelUser').onclick=close;layer.querySelector('#userForm').onsubmit=async e=>{e.preventDefault();const nome=layer.querySelector('#userName').value.trim().toUpperCase();if(!nome)return;const saveBtn=layer.querySelector('#userSave');saveBtn.disabled=true;try{await api('usuarios',{method:'POST',body:{nome}});const rawU=await api('usuarios?select=*&ativo=eq.true&order=nome');if(!globalOperadoresList.includes(nome))globalOperadoresList.push(nome);if(!globalUsuariosAuthDb[nome])globalUsuariosAuthDb[nome]={nome,senha:'',email:GP_DEFAULT_FEDEX_EMAILS[nome]||'',atualizado_em:Date.now()};else globalUsuariosAuthDb[nome].excluido=false;pushPesosGlobalAuthToBridge();users=mergePesosUsersWithGlobal(rawU);close();render()}catch(error){saveBtn.disabled=false;toast(errorMessage(error))}}}
 function create(){
   if(state.ops.some(o=>o.status==='ABERTA')){
     toast('Finalize a operação aberta antes de criar outra.');
@@ -1688,10 +1879,11 @@ function create(){
         close();
         return;
       }
+      const realCreatorId=await ensureRealPesosUserId(selectedUser);
       try{
-        await api('operacoes?on_conflict=id',{method:'POST',body:{id,nome,data_operacao:dataOp,criada_por:selectedUser},prefer:'resolution=ignore-duplicates,return=representation'});
+        await api('operacoes?on_conflict=id',{method:'POST',body:{id,nome,data_operacao:dataOp,criada_por:realCreatorId},prefer:'resolution=ignore-duplicates,return=representation'});
       }catch(e1){
-        await api('operacoes?on_conflict=id',{method:'POST',body:{id,nome,criada_por:selectedUser},prefer:'resolution=ignore-duplicates,return=representation'});
+        await api('operacoes?on_conflict=id',{method:'POST',body:{id,nome,criada_por:realCreatorId},prefer:'resolution=ignore-duplicates,return=representation'});
       }
       await loadOperations();
       close();
@@ -1703,14 +1895,21 @@ function create(){
     }
   };
 }
+let _statusChangingLock=false;
 async function reopenFromHistory(id){
+  if(_statusChangingLock)return;
   if(state.ops.some(o=>o.status==='ABERTA'&&o.id!==id)){
     toast('Finalize a operação em andamento antes de reabrir outra.');
     return;
   }
   if(!await ask('Reabrir operação?','A equipe poderá corrigir ou incluir pesagens.','Reabrir'))return;
+  _statusChangingLock=true;
   try{
-    await api(`operacoes?id=eq.${encodeURIComponent(id)}`,{method:'PATCH',body:{status:'ABERTA'}});
+    try{
+      await api(`operacoes?id=eq.${encodeURIComponent(id)}`,{method:'PATCH',body:{status:'ABERTA',finalizada_em:null}});
+    }catch{
+      await api(`operacoes?id=eq.${encodeURIComponent(id)}`,{method:'PATCH',body:{status:'ABERTA'}});
+    }
     historyView=false;
     await refresh();
     toast('Operação reaberta.');
@@ -1718,22 +1917,41 @@ async function reopenFromHistory(id){
   }catch(e){
     toast(errorMessage(e));
     await refresh();
+  }finally{
+    _statusChangingLock=false;
   }
 }
 async function changeStatus(){
-  const o=op(),isClosed=o.status==='FINALIZADA';
+  if(_statusChangingLock)return;
+  const o=op();
+  if(!o)return;
+  const isClosed=o.status==='FINALIZADA';
   if(isClosed&&state.ops.some(x=>x.status==='ABERTA'&&x.id!==o.id)){
     toast('Finalize a operação em andamento antes de reabrir esta.');
     return;
   }
   if(!await ask(isClosed?'Reabrir operação?':'Finalizar operação?',isClosed?'A equipe poderá corrigir ou incluir pesagens.':'Os lançamentos serão bloqueados e a operação irá para o histórico de 48h.',isClosed?'Reabrir':'Finalizar'))return;
+  _statusChangingLock=true;
   try{
-    await api(`operacoes?id=eq.${encodeURIComponent(o.id)}`,{method:'PATCH',body:{status:isClosed?'ABERTA':'FINALIZADA'}});
+    const newStatus=isClosed?'ABERTA':'FINALIZADA';
+    const finIso=isClosed?null:new Date().toISOString();
+    try{
+      await api(`operacoes?id=eq.${encodeURIComponent(o.id)}`,{method:'PATCH',body:{status:newStatus,finalizada_em:finIso}});
+    }catch{
+      await api(`operacoes?id=eq.${encodeURIComponent(o.id)}`,{method:'PATCH',body:{status:newStatus}});
+    }
+    if(!isClosed){
+      const evFin={type:'OPERACAO_FINALIZADA_REALTIME',operacao:o.nome,id:o.id,ts:Date.now()};
+      try{const bc=new BroadcastChannel('fedex_aereo_pesos_channel');bc.postMessage(evFin);bc.close()}catch{}
+      try{if(window.suiteBridgeRealtimeChannel)window.suiteBridgeRealtimeChannel.send({type:'broadcast',event:'OPERACAO_FINALIZADA_REALTIME',payload:evFin})}catch{}
+    }
     await refresh();
     toast(isClosed?'Operação reaberta.':'Operação finalizada. Exporte o Excel para guardar o relatório.');
   }catch(e){
     toast(errorMessage(e));
     await refresh();
+  }finally{
+    _statusChangingLock=false;
   }
 }
 const CATEGORY_ORDER=['CAIXA','SACA','PALLET','DELIVERY','COMAIL','DG','SEM_CLASSIFICACAO'];
@@ -1743,24 +1961,49 @@ function categoryText(records){return categoryGroups(records).map(r=>`${r.kind==
 function compositionHtml(records){return `<div class="composition">${categoryGroups(records).map(r=>`<div class="composition-line"><span>${catBadgeHtml(r.kind)}</span><span>${r.vol} vol.</span><span>${fmt(r.kg)} kg</span></div>`).join('')}</div>`}
 
 function classifyLegacy(id,r){const layer=modal(`<h2>Classificar lançamento anterior</h2><p>Este registro foi criado antes da separação de caixas e sacas. Escolha a categoria correta.</p><button class="primary wide" id="legacyBox">CAIXA · ${r.vol} volume(s)</button><button class="secondary wide" id="legacyBag" style="margin-top:10px" ${r.vol!==1?'disabled':''}>SACA · 1 volume</button>${r.vol!==1?'<p class="small">Para manter a quantidade, registros com vários volumes não podem ser convertidos em uma única saca.</p>':''}<button class="plain wide" id="legacyKeep">Editar sem classificar</button><button class="plain wide" id="legacyCancel">Cancelar</button>`);$('#legacyBox').onclick=()=>{layer.remove();startEdit(id,'CAIXA')};$('#legacyBag').onclick=()=>{layer.remove();startEdit(id,'SACA')};$('#legacyKeep').onclick=()=>{layer.remove();startEdit(id,null)};$('#legacyCancel').onclick=()=>layer.remove()}
-function startDraft(kind){if(kind==='COMAIL'&&!hasComail){toast('Atualize o aplicativo para habilitar COMAIL.');return}if(kind==='DELIVERY'&&!hasDelivery){toast('Atualize o aplicativo para habilitar DELIVERY.');return}const isDG=kind==='DG',isPallet=kind==='PALLET';category=kind;if(!navigator.onLine||!connected){toast('Conecte-se à internet para lançar pesos.');return}dgMode=isDG;palletMode=isPallet;edit=null;editVersion=null;awb='';allowDuplicatePalletAwb=false;chosen='';query='';num='';draftKgStr='';vol=(isDG||kind==='SACA')?1:0;draftId=crypto.randomUUID();if(isDG||isPallet){stage=0;scanScreen()}else{stage=1;wizard()}}
-function startEdit(id,selectedCategory=undefined){const r=op()?.records.find(r=>r.id===id);if(!r)return;const rKind=recordKind(r);if(hasCategories&&!r.dg&&!r.pallet&&rKind!=='PALLET'&&!r.category&&selectedCategory===undefined){classifyLegacy(id,r);return}category=['DELIVERY','COMAIL','PALLET'].includes(rKind)?rKind:r.dg?'DG':(selectedCategory===undefined?r.category:selectedCategory);dgMode=Boolean(r.dg&&category==='DG');palletMode=category==='PALLET';awb=r.awb||'';allowDuplicatePalletAwb=false;edit=r.id;editVersion=r.updated;chosen=r.dest;vol=r.vol;num='';draftKgStr=String(r.kg||'').replace('.',',');query='';draftId=r.id;if(dgMode||palletMode){stage=0;scanScreen()}else{stage=1;wizard()}}
-async function deleteRecord(id){const o=op(),r=o?.records.find(r=>r.id===id);if(!r)return;if(!await ask('Excluir lançamento?',`${r.dest} · ${r.vol} vol. · ${fmt(r.kg)} kg${r.awb?' · AWB '+r.awb:''}. Este lançamento será removido dos totais.`, 'Excluir'))return;try{const result=await api(`pesagens?id=eq.${id}&atualizada_em=eq.${encodeURIComponent(r.updated)}`,{method:'DELETE'});if(!result.length)throw Error('Este lançamento foi alterado ou excluído por outro colega. Atualize e confira.');if(r.pallet||recordKind(r)==='PALLET')await savePalletMetaForOp(o.id,id,null);await refresh();if(destDetail&&!op()?.records.some(x=>x.dest===destDetail.dest))closeActiveDetailModal();if(specialDetail&&!specialRecords(op(),specialDetail.kind).length)closeActiveDetailModal();toast('Lançamento excluído.')}catch(e){toast(errorMessage(e));await refresh()}}
+function resetWizardState(){
+  stage=0;
+  scanning=false;
+  edit=null;
+  editVersion=null;
+  dgMode=false;
+  palletMode=false;
+  awb='';
+  allowDuplicatePalletAwb=false;
+  chosen='';
+  query='';
+  num='';
+  draftKgStr='';
+  vol=0;
+}
+function startDraft(kind){const curOp=op();if(!curOp||curOp.status!=='ABERTA'){toast('Esta operação está finalizada (Modo Consulta). Reabra para lançar pesos.');return}if(kind==='COMAIL'&&!hasComail){toast('Atualize o aplicativo para habilitar COMAIL.');return}if(kind==='DELIVERY'&&!hasDelivery){toast('Atualize o aplicativo para habilitar DELIVERY.');return}const isDG=kind==='DG',isPallet=kind==='PALLET';category=kind;if(!navigator.onLine||!connected){toast('Conecte-se à internet para lançar pesos.');return}dgMode=isDG;palletMode=isPallet;edit=null;editVersion=null;awb='';allowDuplicatePalletAwb=false;chosen='';query='';num='';draftKgStr='';vol=(isDG||kind==='SACA')?1:0;draftId=crypto.randomUUID();if(isDG||isPallet){stage=0;scanScreen()}else{stage=1;wizard()}}
+function startEdit(id,selectedCategory=undefined){const curOp=op();if(!curOp||curOp.status!=='ABERTA'){toast('Esta operação está finalizada (Modo Consulta).');return}const r=curOp.records.find(r=>r.id===id);if(!r)return;const rKind=recordKind(r);if(hasCategories&&!r.dg&&!r.pallet&&rKind!=='PALLET'&&!r.category&&selectedCategory===undefined){classifyLegacy(id,r);return}category=['DELIVERY','COMAIL','PALLET'].includes(rKind)?rKind:r.dg?'DG':(selectedCategory===undefined?r.category:selectedCategory);dgMode=Boolean(r.dg&&category==='DG');palletMode=category==='PALLET';awb=r.awb||'';allowDuplicatePalletAwb=false;edit=r.id;editVersion=r.updated;chosen=r.dest;vol=r.vol;num='';draftKgStr=String(r.kg||'').replace('.',',');query='';draftId=r.id;if(dgMode||palletMode){stage=0;scanScreen()}else{stage=1;wizard()}}
+async function deleteRecord(id){const o=op(),r=o?.records.find(r=>r.id===id);if(!r)return;if(!await ask('Excluir lançamento?',`${r.dest} · ${r.vol} vol. · ${fmt(r.kg)} kg${r.awb?' · AWB '+r.awb:''}. Este lançamento será removido dos totais.`, 'Excluir'))return;try{await ensureDbOperationOpenForWrite(o.id);const result=await api(`pesagens?id=eq.${id}&atualizada_em=eq.${encodeURIComponent(r.updated)}`,{method:'DELETE'});if(!result.length)throw Error('Este lançamento foi alterado ou excluído por outro colega. Atualize e confira.');if(r.pallet||recordKind(r)==='PALLET')await savePalletMetaForOp(o.id,id,null);await refresh();if(destDetail&&!op()?.records.some(x=>x.dest===destDetail.dest))closeActiveDetailModal();if(specialDetail&&!specialRecords(op(),specialDetail.kind).length)closeActiveDetailModal();toast('Lançamento excluído.')}catch(e){toast(errorMessage(e));await refresh()}}
 function wizard(){const steps=palletMode?4:(category==='SACA'?2:3);const stepNo=palletMode?(stage+1):(dgMode?(stage===1?2:3):(category==='SACA'?(stage===1?1:2):stage));const titles=['','Qual é o destino?','Quantos volumes?','Qual é o peso?'];app.innerHTML=`<section class="step"><div class="stepin"><div class="stephead"><button class="back" id="prev">← ${stage===1?'Cancelar':'Voltar'}</button><span class="eyebrow">${edit?'EDITANDO':'INSERINDO'} ${esc(category||'PESO')} · ${stepNo} DE ${steps}</span><button class="plain" id="close" aria-label="Cancelar lançamento">✕</button></div><div class="progress">${Array.from({length:steps},(_,i)=>i+1).map(i=>`<i class="${i<=stepNo?'on':''}"></i>`).join('')}</div><h1>${titles[stage]}</h1>${dgMode?`<div class="dg-awb">INSERINDO DG · AWB ${esc(awb)} · 1 volume</div>`:palletMode?`<div class="dg-awb special-kind">${edit?'EDITANDO':'INSERINDO'} PALLET · AWB ${esc(awb)}</div>`:category==='SACA'?'<div class="dg-awb">SACA · 1 volume automático</div>':category==='CAIXA'?'<div class="dg-awb">CAIXA</div>':category==='DELIVERY'?'<div class="dg-awb special-kind">'+(edit?'EDITANDO':'INSERINDO')+' DELIVERY</div>':category==='COMAIL'?'<div class="dg-awb special-kind">'+(edit?'EDITANDO':'INSERINDO')+' COMAIL</div>':''}<p>${stage===1?'Busque e selecione um destino cadastrado.':stage===2?(palletMode?'Informe a quantidade de volumes do pallet.':'Informe a quantidade que está pesando.'):'Informe o peso total medido na balança.'}</p>${stage>1?`<div class="context"><span class="chip">↗ ${esc(chosen)}</span>${stage===3?`<span class="chip">${vol} volumes</span>`:''}</div>`:''}${stage===1?`<input id="search" class="input" placeholder="Digite o código ou a cidade" autocomplete="off" value="${esc(query)}"><div class="destlist" id="destlist"></div>${chosen?`<button class="primary wide confirm" id="nextStage1">OK · Continuar com ${esc(chosen)} →</button>`:''}`:`<div class="number" aria-live="polite">${esc(num||'0')}<span>${stage===2?'vol.':'kg'}</span></div><div class="keys">${['1','2','3','4','5','6','7','8','9',stage===3?',':'','0','⌫'].map(k=>k?`<button class="key ${k==='⌫'||k===','?'utility':''}" data-key="${k}" aria-label="${k==='⌫'?'Apagar último dígito':k}">${k}</button>`:'<div></div>').join('')}</div><button class="primary wide confirm" id="next" ${!(Number(num.replace(',','.'))>0)?'disabled':''}>${stage===2?'OK · Confirmar volumes →':'OK · Salvar pesagem ✓'}</button>`}</div></section>`;
-$('#close').onclick=()=>{if(saving)return;stage=0;render()};$('#prev').onclick=()=>{if(saving)return;if(stage===1){if((dgMode||palletMode)&&!edit){stage=0;scanScreen()}else{stage=0;render()}}else if(stage===2){stage=1;wizard()}else{draftKgStr=num;stage=(dgMode||category==='SACA')?1:2;num=String(vol);wizard()}};
+$('#close').onclick=()=>{if(saving)return;resetWizardState();render()};$('#prev').onclick=()=>{if(saving)return;if(stage===1){if((dgMode||palletMode)&&!edit){stage=0;scanScreen()}else{resetWizardState();render()}}else if(stage===2){stage=1;wizard()}else{draftKgStr=num;stage=(dgMode||category==='SACA')?1:2;num=String(vol);wizard()}};
 if(stage===1){list();$('#search').oninput=e=>{query=e.target.value;list()};if($('#nextStage1'))$('#nextStage1').onclick=next}else document.querySelectorAll('[data-key]').forEach(b=>b.onclick=()=>key(b.dataset.key));if($('#next'))$('#next').onclick=next;}
+window.addEventListener('keydown',e=>{
+  if(saving||scanning||stage<2||document.querySelector('.modal'))return;
+  if(e.target&&['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName))return;
+  if(e.key>='0'&&e.key<='9'){e.preventDefault();key(e.key)}
+  else if((e.key===','||e.key==='.')&&stage===3){e.preventDefault();key(',')}
+  else if(e.key==='Backspace'){e.preventDefault();key('⌫')}
+  else if(e.key==='Enter'&&Number(num.replace(',','.'))>0){e.preventDefault();next()}
+  else if(e.key==='Escape'){e.preventDefault();resetWizardState();render()}
+});
 function destinationAllowed(code){if(category==='SACA')return code!=='BSBA CAIXAS';if(['CAIXA','DG','PALLET','DELIVERY','COMAIL'].includes(category)||dgMode||palletMode)return code!=='BSBA SACAS';return true}
 function list(){if(chosen&&!destinationAllowed(chosen)){chosen=''}const q=query.trim().toLocaleLowerCase();const found=destinations.filter(d=>destinationAllowed(d[0])&&d.join(' ').toLocaleLowerCase().includes(q));$('#destlist').innerHTML=found.map(([d,n])=>{const mInfo=resolveDestMalhaInfo(d);return `<button class="dest ${chosen===d?'selected':''}" data-dest="${d}"><span><b>${d}</b><small>${n}</small></span><span class="dest-right">${ciaLogoBadgeHtml(mInfo.cia)}${origBadgeHtml(mInfo.orig)}<span class="dest-arrow-ind">${chosen===d?'✓':'→'}</span></span></button>`}).join('')||'<div class="empty">Nenhum destino cadastrado encontrado.</div>';document.querySelectorAll('[data-dest]').forEach(b=>b.onclick=()=>{if(stage!==1||saving)return;chosen=b.dataset.dest;$('#search')?.blur();next()})}
 function key(k){if(saving)return;if(k==='⌫')num=num.slice(0,-1);else if(k===','){if(!num.includes(','))num=(num||'0')+','}else{if(num.replace(',','').length>=9)return;if(num.includes(',')&&num.split(',')[1].length>=3)return;num=num==='0'?k:num+k}if(stage===3)draftKgStr=num;wizard()}
 async function persistPesagemRecord(o,body,isPlt){
-  
+  await ensureDbOperationOpenForWrite(o.id);
+  const realUserId=await ensureRealPesosUserId(selectedUser);
   const trySave=async(payload)=>{
     if(edit){
-      const result=await api(`pesagens?id=eq.${edit}&atualizada_em=eq.${encodeURIComponent(editVersion)}`,{method:'PATCH',body:{...payload,editado_por:selectedUser}});
+      const result=await api(`pesagens?id=eq.${edit}&atualizada_em=eq.${encodeURIComponent(editVersion)}`,{method:'PATCH',body:{...payload,editado_por:realUserId}});
       if(!result.length)throw Error('O lançamento foi alterado por outro colega. Volte ao histórico, confira e edite novamente.');
       return result;
     }else{
-      return await api('pesagens?on_conflict=id',{method:'POST',body:{...payload,id:draftId,operacao_id:o.id,usuario_id:selectedUser},prefer:'resolution=ignore-duplicates,return=representation'});
+      return await api('pesagens?on_conflict=id',{method:'POST',body:{...payload,id:draftId,operacao_id:o.id,usuario_id:realUserId},prefer:'resolution=ignore-duplicates,return=representation'});
     }
   };
   if(!isPlt){
@@ -1797,27 +2040,27 @@ if(category==='SACA'&&kg>=HIGH_SACA_KG){if(!await ask(`Saca acima de ${HIGH_SACA
 else if(!palletMode&&category!=='SACA'&&unitKg>=HIGH_BOX_UNIT_KG){if(!await ask(`Peso elevado por volume: ${fmt(unitKg)} kg/vol`,`Você digitou ${fmt(kg)} kg para ${vol} volume(s) em ${chosen} (acima do limite de ${HIGH_BOX_UNIT_KG} kg por caixa). Confira se não faltou a vírgula (ex.: ${fmt(kg/10)} kg).`,`Confirmar ${fmt(kg)} kg`))return}
 else if(kg>=HIGH_WEIGHT_KG){if(!await ask(`Peso elevado: ${fmt(kg)} kg`,`Confirma o lançamento de ${fmt(kg)} kg (${vol} vol.) para ${chosen}? Confira se não faltou a vírgula.`,`Confirmar ${fmt(kg)} kg`))return}
 const button=$('#next');button.disabled=true;button.textContent='Salvando…';saving=true;try{const body={destino:chosen,volumes:vol,peso_kg:kg,tipo:dgMode?'DG':palletMode?'PALLET':['DELIVERY','COMAIL'].includes(category)?category:'NORMAL',awb:(dgMode||palletMode)?awb:null,...(hasCategories?{categoria:dgMode?'DG':palletMode?'PALLET':category}: {})};await persistPesagemRecord(o,body,palletMode);const message=`${edit?'Atualizado':'Registrado'}: ${dgMode?'DG':palletMode?'PALLET':category||'PESO'} · ${chosen} · ${vol} vol. · ${fmt(kg)} kg`;stage=0;scanning=false;saving=false;draftKgStr='';await refresh();render();toast(message)}catch(e){saving=false;button.disabled=false;button.textContent='OK · Salvar pesagem ✓';toast(errorMessage(e))}}
-function report(){const o=op(),t=sum(o.records),text=`SISTEMA AÉREO - GESTÃO DE PESOS — ${o.nome}\n${o.date}\n\n${grouped(o.records).map(([d,r])=>`${d}: ${r.vol} vol. — ${fmt(r.kg)} kg\n  ${categoryText(o.records.filter(item=>item.dest===d))}`).join('\n')}\n\nTOTAL: ${t.vol} vol. — ${fmt(t.kg)} kg${o.records.some(r=>r.dg)?'\n\nDG (já incluídos nos totais)\n'+o.records.filter(r=>r.dg).map(r=>`AWB ${r.awb} | ${r.dest} | 1 vol. | ${fmt(r.kg)} kg`).join('\n'):''}${o.records.some(r=>r.pallet||recordKind(r)==='PALLET')?'\n\nPALLET (já incluídos nos totais)\n'+o.records.filter(r=>r.pallet||recordKind(r)==='PALLET').map(r=>`AWB ${r.awb} | ${r.dest} | ${r.vol} vol. | ${fmt(r.kg)} kg`).join('\n'):''}`;const layer=modal(`<div class="sectionhead"><h2>Resumo da operação</h2><button class="plain" id="dismiss" aria-label="Fechar resumo">✕</button></div><div class="report">${esc(text)}</div><button class="primary wide" id="copy" style="margin-top:15px">Copiar resumo</button>`);$('#dismiss').onclick=()=>layer.remove();$('#copy').onclick=async()=>{try{await navigator.clipboard.writeText(text);toast('Resumo copiado')}catch{try{const ta=document.createElement('textarea');ta.value=text;document.body.append(ta);ta.select();document.execCommand('copy');ta.remove();toast('Resumo copiado')}catch{toast('Selecione o texto para copiar.')}}}}
+function report(){const o=op(),activeRecs=o.records.filter(r=>!r.naoContabiliza),t=sum(activeRecs),text=`SISTEMA AÉREO - GESTÃO DE PESOS — ${o.nome}\n${o.date}\n\n${grouped(activeRecs).map(([d,r])=>`${d}: ${r.vol} vol. — ${fmt(r.kg)} kg\n  ${categoryText(activeRecs.filter(item=>item.dest===d))}`).join('\n')}\n\nTOTAL: ${t.vol} vol. — ${fmt(t.kg)} kg${activeRecs.some(r=>r.dg)?'\n\nDG (já incluídos nos totais)\n'+activeRecs.filter(r=>r.dg).map(r=>`AWB ${r.awb} | ${r.dest} | 1 vol. | ${fmt(r.kg)} kg`).join('\n'):''}${activeRecs.some(r=>r.pallet||recordKind(r)==='PALLET')?'\n\nPALLET (já incluídos nos totais)\n'+activeRecs.filter(r=>r.pallet||recordKind(r)==='PALLET').map(r=>`AWB ${r.awb} | ${r.dest} | ${r.vol} vol. | ${fmt(r.kg)} kg`).join('\n'):''}`;const layer=modal(`<div class="sectionhead"><h2>Resumo da operação</h2><button class="plain" id="dismiss" aria-label="Fechar resumo">✕</button></div><div class="report">${esc(text)}</div><button class="primary wide" id="copy" style="margin-top:15px">Copiar resumo</button>`);$('#dismiss').onclick=()=>layer.remove();$('#copy').onclick=async()=>{try{await navigator.clipboard.writeText(text);toast('Resumo copiado')}catch{try{const ta=document.createElement('textarea');ta.value=text;document.body.append(ta);ta.select();document.execCommand('copy');ta.remove();toast('Resumo copiado')}catch{toast('Selecione o texto para copiar.')}}}}
 function installHelp(){const ios=/iPhone|iPad|iPod/.test(navigator.userAgent),layer=modal(`<h2>Instalar Sistema Aéreo - Gestão de Pesos</h2><p>${ios?'No Safari: toque em Compartilhar → Adicionar à Tela de Início. Ative Abrir como App da Web, se aparecer.':'No Chrome: abra o menu ⋮ e escolha Instalar app ou Adicionar à tela inicial. No Windows, use o ícone de instalação na barra de endereço.'}</p><p class="small">Abra este endereço diretamente no navegador do celular. É necessário internet para compartilhar os lançamentos.</p><button class="primary wide" id="installClose">Entendi</button>`);$('#installClose').onclick=()=>layer.remove()}
 // Decode the visible guide at full resolution, with a wider fallback every fourth frame.
 // Camera decoding is provided by AwbScanner (ZXing-C++ in a worker).
 function stopCamera(){cameraEpoch++;if(reader){reader.stop();reader=null}const v=$('#camera');if(v?.srcObject){v.srcObject.getTracks().forEach(t=>t.stop());v.srcObject=null}}
 function scanScreen(){scanning=true;stopCamera();const modeLabel=palletMode?'PALLET · 1 DE 4':'DG · 1 DE 3';app.innerHTML=`<section class="step scanner"><div class="stepin"><div class="stephead"><button class="back" id="cancelScan">← Cancelar</button><span class="eyebrow">${edit?'EDITANDO':'INSERINDO'} ${modeLabel}</span></div><h1>${palletMode?'Escaneie a AWB do Pallet':'Escaneie a AWB'}</h1><p>Mostre as barras inteiras de qualquer uma das duas etiquetas FedEx.</p><div class="camera-box"><video id="camera" autoplay muted playsinline></video><div class="scan-guide"></div></div><div id="cameraControls" class="camera-controls"></div><div id="cameraStatus" role="status" class="camera-status">Preparando câmera…</div><label for="awbInput" class="field">AWB ${palletMode?'do Pallet':'do volume'}</label><input class="input" id="awbInput" inputmode="numeric" autocomplete="off" placeholder="AWB de 12 dígitos" maxlength="40" value="${esc(extractAwb(awb)||awb)}"><p class="small">Confira a AWB: a etiqueta pode ter outros códigos. Zeros iniciais são mantidos.</p><button type="button" class="secondary photo-scan" id="readPhoto">Ler foto da etiqueta</button><input type="file" id="awbPhoto" accept="image/*" hidden><div class="scan-actions"><button class="secondary" id="restartCamera">↻ Ler novamente</button><button class="primary" id="confirmAwb">OK · Confirmar AWB →</button></div></div></section>`;
 $('#readPhoto').onclick=()=>$('#awbPhoto').click();$('#awbPhoto').onchange=readAwbPhoto;
-$('#cancelScan').onclick=()=>{stopCamera();scanning=false;stage=0;render()};$('#restartCamera').onclick=()=>{unlockAudio();stopCamera();startCamera()};$('#awbInput').onfocus=stopCamera;$('#confirmAwb').onclick=async()=>{const value=extractAwb($('#awbInput').value);if(!value){toast('Informe a AWB de 12 dígitos impressa na etiqueta.');return}if(!op()||op().status!=='ABERTA'){toast('A operação não está aberta. Volte e confira.');return}if(dgMode&&op().records.some(r=>r.dg&&(extractAwb(r.awb)||r.awb)===value&&r.id!==edit)){toast('Esta AWB DG já existe nesta operação. Edite o lançamento existente.');return}if(palletMode&&op().records.some(r=>(r.pallet||recordKind(r)==='PALLET')&&(extractAwb(r.awb)||r.awb)===value&&r.id!==edit)){if(!await ask('AWB de Pallet já registrada',`Já existe um Pallet com a AWB ${value} nesta operação. Deseja lançar um 2º Pallet vinculado a esta mesma AWB?`,'Sim, lançar 2º Pallet'))return;allowDuplicatePalletAwb=true}awb=value;stopCamera();scanning=false;stage=1;wizard()};if(edit){$('#cameraStatus').textContent='Confira ou corrija a AWB deste lançamento. Toque em Ler novamente para usar a câmera.'}else startCamera()}
+$('#cancelScan').onclick=()=>{stopCamera();resetWizardState();render()};$('#restartCamera').onclick=()=>{unlockAudio();stopCamera();startCamera()};$('#awbInput').onfocus=stopCamera;$('#awbInput').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();$('#confirmAwb')?.click()}};$('#confirmAwb').onclick=async()=>{const value=extractAwb($('#awbInput').value);if(!value){toast('Informe a AWB de 12 dígitos impressa na etiqueta.');return}if(!op()||op().status!=='ABERTA'){toast('A operação não está aberta. Volte e confira.');return}if(dgMode&&op().records.filter(r=>!r.naoContabiliza).some(r=>r.dg&&(extractAwb(r.awb)||r.awb)===value&&r.id!==edit)){toast('Esta AWB DG já existe nesta operação. Edite o lançamento existente.');return}if(palletMode&&op().records.filter(r=>!r.naoContabiliza).some(r=>(r.pallet||recordKind(r)==='PALLET')&&(extractAwb(r.awb)||r.awb)===value&&r.id!==edit)){if(!await ask('AWB de Pallet já registrada',`Já existe um Pallet com a AWB ${value} nesta operação. Deseja lançar um 2º Pallet vinculado a esta mesma AWB?`,'Sim, lançar 2º Pallet'))return;allowDuplicatePalletAwb=true}awb=value;stopCamera();scanning=false;stage=1;wizard()};if(edit){$('#cameraStatus').textContent='Confira ou corrija a AWB deste lançamento. Toque em Ler novamente para usar a câmera.'}else startCamera()}
 async function startCamera(){const token=++cameraEpoch,status=$('#cameraStatus');if(!navigator.mediaDevices?.getUserMedia||!window.AwbScanner){status.textContent='Abra no Safari ou Chrome e permita a câmera. Você também pode digitar a AWB.';return}try{const current=new AwbScanner($('#camera'),{controls:$('#cameraControls'),onStatus:message=>{if(token===cameraEpoch)status.textContent=message},onRead:codes=>{if(token!==cameraEpoch)return true;const matches=[...new Set(codes.map(extractAwb).filter(Boolean))];if(matches.length>1){status.textContent='Há mais de uma AWB na imagem. Aponte para apenas um volume.';return false}if(!matches.length)return false;$('#awbInput').value=matches[0];status.textContent='AWB lida. Confira os 12 dígitos e toque em OK.';playScanBeep();navigator.vibrate?.(60);stopCamera();return true}});reader=current;await current.start();if(token!==cameraEpoch)current.stop()}catch(e){if(token!==cameraEpoch)return;stopCamera();status.textContent=e.name==='NotAllowedError'?'Câmera não autorizada. Permita o acesso no Safari/Chrome ou digite a AWB.':'Não foi possível abrir a câmera. Toque em Ler novamente ou digite a AWB.'}}
 async function readAwbPhoto(event){const file=event.target.files?.[0];if(!file)return;stopCamera();const token=cameraEpoch,status=$('#cameraStatus'),button=$('#readPhoto');button.disabled=true;status.textContent='Analisando a foto…';try{const codes=await AwbDecode.photo(file);if(token!==cameraEpoch||!scanning)return;const matches=[...new Set(codes.map(extractAwb).filter(Boolean))];if(matches.length===1){$('#awbInput').value=matches[0];playScanBeep();status.textContent='AWB lida na foto. Confira os 12 dígitos e confirme.'}else status.textContent=matches.length>1?'A foto contém mais de uma AWB. Fotografe apenas uma etiqueta.':'Não consegui reconhecer a AWB nesta foto. Envie essa foto no chat para verificarmos.'}catch(e){if(token===cameraEpoch)status.textContent=e.message||'Não foi possível ler a foto.'}finally{button.disabled=false;event.target.value=''}}
 window.addEventListener('pagehide',stopCamera);
 document.addEventListener('visibilitychange',()=>{if(document.hidden)stopCamera()});
-function excelBrazilDate(value){const parts=new Intl.DateTimeFormat('en-US',{timeZone:'America/Sao_Paulo',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).formatToParts(new Date(value));const p=Object.fromEntries(parts.map(x=>[x.type,x.value]));return new Date(Date.UTC(+p.year,+p.month-1,+p.day,+p.hour,+p.minute,+p.second))}
-function buildExportWorkbook(o,Excel){const book=new Excel.Workbook();book.creator='Sistema Aéreo - Gestão de Pesos';book.created=new Date();const meta=book.addWorksheet('OPERACAO');meta.columns=[{header:'CAMPO',key:'campo',width:24},{header:'VALOR',key:'valor',width:60}];meta.addRows([{campo:'VERSAO_LAYOUT',valor:3},{campo:'OPERACAO_ID',valor:o.id},{campo:'NOME',valor:o.nome},{campo:'DATA_OPERACAO',valor:new Date(o.data_operacao+'T12:00:00Z')},{campo:'STATUS',valor:o.status},{campo:'GERADO_EM',valor:excelBrazilDate(new Date())},{campo:'VOLUMES_TOTAL',valor:sum(o.records).vol},{campo:'PESO_TOTAL_KG',valor:sum(o.records).kg}]);meta.getCell('B5').numFmt='dd/mm/yyyy';meta.getCell('B7').numFmt='dd/mm/yyyy hh:mm:ss';meta.getCell('B9').numFmt='0.000';const summary=book.addWorksheet('RESUMO');summary.columns=[{header:'DESTINO',key:'dest',width:23},{header:'TIPO',key:'tipo',width:13},{header:'VOLUMES',key:'vol',width:14},{header:'PESO_KG',key:'kg',width:16}];for(const [dest] of grouped(o.records)){for(const tipo of CATEGORY_ORDER){const records=o.records.filter(r=>r.dest===dest&&recordKind(r)===tipo);if(records.length)summary.addRow({dest,tipo,...sum(records)})}}summary.getColumn('kg').numFmt='0.000';const dg=book.addWorksheet('DG');dg.columns=[{header:'AWB',key:'awb',width:20},{header:'DESTINO',key:'dest',width:23},{header:'VOLUMES',key:'vol',width:13},{header:'PESO_KG',key:'kg',width:15},{header:'USUARIO',key:'user',width:20},{header:'REGISTRADO_EM',key:'created',width:24}];for(const r of o.records.filter(r=>r.dg))dg.addRow({awb:String(r.awb),dest:formatRecordDestLabel(r),vol:1,kg:r.kg,user:r.user,created:excelBrazilDate(r.created)});dg.getColumn('awb').numFmt='@';dg.getColumn('kg').numFmt='0.000';dg.getColumn('created').numFmt='dd/mm/yyyy hh:mm:ss';const plt=book.addWorksheet('PALLET');plt.columns=[{header:'AWB',key:'awb',width:20},{header:'DESTINO',key:'dest',width:23},{header:'VOLUMES',key:'vol',width:13},{header:'PESO_KG',key:'kg',width:15},{header:'USUARIO',key:'user',width:20},{header:'REGISTRADO_EM',key:'created',width:24}];for(const r of o.records.filter(r=>r.pallet||recordKind(r)==='PALLET'))plt.addRow({awb:String(r.awb||''),dest:r.dest,vol:r.vol,kg:r.kg,user:r.user,created:excelBrazilDate(r.created)});plt.getColumn('awb').numFmt='@';plt.getColumn('kg').numFmt='0.000';plt.getColumn('created').numFmt='dd/mm/yyyy hh:mm:ss';const detail=book.addWorksheet('DETALHAMENTO');detail.columns=[{header:'DESTINO',key:'dest',width:23},{header:'TIPO',key:'category',width:20},{header:'VOLUMES',key:'vol',width:14},{header:'PESO_KG',key:'kg',width:16},{header:'HORARIO',key:'time',width:14},{header:'AWB',key:'awb',width:20},{header:'USUARIO',key:'user',width:18},{header:'REGISTRADO_EM',key:'created',width:22}];for(const r of o.records){detail.addRow({dest:r.dest,category:recordKind(r),vol:r.vol,kg:r.kg,time:r.time||showTime(r.created),awb:String(r.awb||''),user:r.user||'',created:r.created?excelBrazilDate(r.created):''})}detail.getColumn('kg').numFmt='0.000';detail.getColumn('awb').numFmt='@';detail.getColumn('created').numFmt='dd/mm/yyyy hh:mm:ss';for(const sheet of book.worksheets){sheet.views=[{state:'frozen',ySplit:1}];sheet.getRow(1).height=27;sheet.getRow(1).eachCell(cell=>{cell.font={bold:true,color:{argb:'FFFFFFFF'}};cell.fill={type:'pattern',pattern:'solid',fgColor:{argb:'FF059669'}};cell.alignment={vertical:'middle'}});sheet.autoFilter={from:{row:1,column:1},to:{row:Math.max(1,sheet.rowCount),column:sheet.columnCount}}}return book}
+function excelBrazilDate(value){if(!value)return new Date();const dt=new Date(value);if(isNaN(dt.getTime()))return new Date();const parts=new Intl.DateTimeFormat('en-US',{timeZone:'America/Sao_Paulo',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).formatToParts(dt);const p=Object.fromEntries(parts.map(x=>[x.type,x.value]));return new Date(Date.UTC(+p.year,+p.month-1,+p.day,+p.hour,+p.minute,+p.second))}
+function buildExportWorkbook(o,Excel){const book=new Excel.Workbook();book.creator='Sistema Aéreo - Gestão de Pesos';book.created=new Date();const activeRecs=o.records.filter(r=>!r.naoContabiliza);const meta=book.addWorksheet('OPERACAO');meta.columns=[{header:'CAMPO',key:'campo',width:24},{header:'VALOR',key:'valor',width:60}];meta.addRows([{campo:'VERSAO_LAYOUT',valor:3},{campo:'OPERACAO_ID',valor:o.id},{campo:'NOME',valor:o.nome},{campo:'DATA_OPERACAO',valor:new Date(o.data_operacao+'T12:00:00Z')},{campo:'STATUS',valor:o.status},{campo:'GERADO_EM',valor:excelBrazilDate(new Date())},{campo:'VOLUMES_TOTAL',valor:sum(activeRecs).vol},{campo:'PESO_TOTAL_KG',valor:sum(activeRecs).kg}]);meta.getCell('B5').numFmt='dd/mm/yyyy';meta.getCell('B7').numFmt='dd/mm/yyyy hh:mm:ss';meta.getCell('B9').numFmt='0.000';const summary=book.addWorksheet('RESUMO');summary.columns=[{header:'DESTINO',key:'dest',width:23},{header:'TIPO',key:'tipo',width:13},{header:'VOLUMES',key:'vol',width:14},{header:'PESO_KG',key:'kg',width:16}];for(const [dest] of grouped(activeRecs)){for(const tipo of CATEGORY_ORDER){const records=activeRecs.filter(r=>r.dest===dest&&recordKind(r)===tipo);if(records.length&&sum(records).vol>0)summary.addRow({dest,tipo,...sum(records)})}}summary.getColumn('kg').numFmt='0.000';const dg=book.addWorksheet('DG');dg.columns=[{header:'AWB',key:'awb',width:20},{header:'DESTINO',key:'dest',width:23},{header:'VOLUMES',key:'vol',width:13},{header:'PESO_KG',key:'kg',width:15},{header:'USUARIO',key:'user',width:20},{header:'REGISTRADO_EM',key:'created',width:24}];for(const r of activeRecs.filter(r=>r.dg))dg.addRow({awb:String(r.awb||''),dest:formatRecordDestLabel(r),vol:1,kg:r.kg,user:r.user,created:excelBrazilDate(r.created)});dg.getColumn('awb').numFmt='@';dg.getColumn('kg').numFmt='0.000';dg.getColumn('created').numFmt='dd/mm/yyyy hh:mm:ss';const plt=book.addWorksheet('PALLET');plt.columns=[{header:'AWB',key:'awb',width:20},{header:'DESTINO',key:'dest',width:23},{header:'VOLUMES',key:'vol',width:13},{header:'PESO_KG',key:'kg',width:15},{header:'USUARIO',key:'user',width:20},{header:'REGISTRADO_EM',key:'created',width:24}];for(const r of activeRecs.filter(r=>r.pallet||recordKind(r)==='PALLET'))plt.addRow({awb:String(r.awb||''),dest:r.dest,vol:r.vol,kg:r.kg,user:r.user,created:excelBrazilDate(r.created)});plt.getColumn('awb').numFmt='@';plt.getColumn('kg').numFmt='0.000';plt.getColumn('created').numFmt='dd/mm/yyyy hh:mm:ss';const detail=book.addWorksheet('DETALHAMENTO');detail.columns=[{header:'DESTINO',key:'dest',width:23},{header:'TIPO',key:'category',width:20},{header:'VOLUMES',key:'vol',width:14},{header:'PESO_KG',key:'kg',width:16},{header:'HORARIO',key:'time',width:14},{header:'AWB',key:'awb',width:20},{header:'USUARIO',key:'user',width:18},{header:'REGISTRADO_EM',key:'created',width:22}];for(const r of activeRecs){detail.addRow({dest:r.dest,category:recordKind(r),vol:r.vol,kg:r.kg,time:r.time||showTime(r.created),awb:String(r.awb||''),user:r.user||'',created:r.created?excelBrazilDate(r.created):''})}detail.getColumn('kg').numFmt='0.000';detail.getColumn('awb').numFmt='@';detail.getColumn('created').numFmt='dd/mm/yyyy hh:mm:ss';for(const sheet of book.worksheets){sheet.views=[{state:'frozen',ySplit:1}];sheet.getRow(1).height=27;sheet.getRow(1).eachCell(cell=>{cell.font={bold:true,color:{argb:'FFFFFFFF'}};cell.fill={type:'pattern',pattern:'solid',fgColor:{argb:'FF059669'}};cell.alignment={vertical:'middle'}});sheet.autoFilter={from:{row:1,column:1},to:{row:Math.max(1,sheet.rowCount),column:sheet.columnCount}}}return book}
 let excelPromise;
 function loadExcel(){if(window.ExcelJS)return Promise.resolve(window.ExcelJS);if(!excelPromise)excelPromise=new Promise((resolve,reject)=>{const script=document.createElement('script');script.src='https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js';script.onload=()=>resolve(window.ExcelJS);script.onerror=()=>{const fallback=document.createElement('script');fallback.src='/exceljs.min.js';fallback.onload=()=>resolve(window.ExcelJS);fallback.onerror=()=>{excelPromise=null;reject(Error('Não foi possível carregar o exportador Excel. Tente novamente.'))};document.head.append(fallback)};document.head.append(script)});return excelPromise}
 async function exportExcel(){const button=$('#export'),id=active;button.disabled=true;button.textContent='Gerando Excel…';try{const Excel=await loadExcel();await loadOperations();if(!state.ops.some(o=>o.id===id))throw Error('Operação não encontrada.');await loadRecords(id);const o=state.ops.find(o=>o.id===id);const book=buildExportWorkbook(o,Excel),buffer=await book.xlsx.writeBuffer(),blob=new Blob([buffer],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=`PESOS_${o.data_operacao}_${o.id.slice(0,8)}.xlsx`;document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);toast(o.status==='FINALIZADA'?'Excel gerado com os dados da operação.':'Excel parcial gerado. A operação ainda está aberta.')}catch(e){toast(errorMessage(e))}finally{safeRender()}}
-window.addEventListener('online',refresh);
+window.addEventListener('online',()=>{syncMalhaDirectFromDb();refresh()});
 window.addEventListener('offline',()=>{connected=false;safeRender();toast('Sem internet. Novos lançamentos precisam de conexão.')});
-window.addEventListener('focus',()=>{if(!loading)refresh()});
-setInterval(()=>{if(!document.hidden&&!loading&&(!opsLive||(active&&!live)))refresh()},30000);
+window.addEventListener('focus',()=>{if(!loading){syncMalhaDirectFromDb();refresh()}});
+setInterval(()=>{if(!document.hidden&&!loading&&(active||!opsLive))refresh()},6000);
 
 
 function loadDemoMode(){
