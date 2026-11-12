@@ -409,7 +409,7 @@ const showDate=(d,nome)=>{
 const showTime=t=>new Intl.DateTimeFormat('pt-BR',{hour:'2-digit',minute:'2-digit',timeZone:'America/Sao_Paulo'}).format(new Date(t));
 const cityNames={'IMPA':'Imperatriz','MCZA':'Maceió','MCPA':'Macapá','SLZA':'São Luís','THEA':'Teresina','FORA':'Fortaleza','FORA FORMAL':'Fortaleza · Formal','AJUA':'Aracaju','BVBA':'Boa Vista','MAOA':'Manaus','RECA':'Recife','VIXA':'Vitória','CGBA':'Cuiabá','CGRA':'Campo Grande','BELA':'Belém','PNZA':'Petrolina','SSAA':'Salvador','JDOA':'Juazeiro do Norte','PMWA':'Palmas','RBRA':'Rio Branco','JPAA':'João Pessoa','ITNA':'ITN / IOS / TXT','PVHA':'Porto Velho','NATA':'Natal','BSBA CAIXAS':'Brasília · Caixas','BSBA SACAS':'Brasília · Sacas','STMA':'Santarém','MABA':'Marabá','VDCA':'Vitória da Conquista','GYNA':'Goiânia','BRAA':'Barreiras'};
 let state={name:'',ops:[]},users=[],destinations=[],selectedUser=null,active=null,screen='login',historyView=false,loading=true,connected=false;
-let hasCategories=false,hasDelivery=false,hasComail=false,category=null;
+let hasCategories=true,hasDelivery=true,hasComail=true,category=null;
 let stage=0,chosen='',num='',draftKgStr='',vol=0,query='',edit=null,dgMode=false,palletMode=false,awb='',allowDuplicatePalletAwb=false,reader=null,cameraEpoch=0,scanning=false,saving=false,draftId=null,editVersion=null;
 const SUITE_BRIDGE_URL='https://megozyczcjpqqozbdqrn.supabase.co';
 const SUITE_BRIDGE_KEY='sb_publishable_76xL9ys9iOhpK7nzNtX5mw_VZD3yKot';
@@ -1153,8 +1153,63 @@ function isFlow(){return stage>0||scanning||saving}
 function safeRender(){if(!isFlow()&&!document.querySelector('.modal'))render();if(specialDetail)updateSpecialDetail();if(destDetail)updateDestDetail()}
 try { localStorage.removeItem('peso_multi_active_ops_v1'); } catch {}
 
+// Garante compatibilidade caso alguma chamada legada invoque ensureDbOperationOpenForWrite
+async function ensureDbOperationOpenForWrite(opId) {
+  return true;
+}
+
+function hydrateCachedOpsAndRecords() {
+  try {
+    const rawUsers = localStorage.getItem('peso_users_cache_v1');
+    if (rawUsers) {
+      const pu = JSON.parse(rawUsers);
+      if (Array.isArray(pu) && pu.length) users = mergePesosUsersWithGlobal(pu);
+    }
+  } catch {}
+  try {
+    const rawDest = localStorage.getItem('peso_dest_cache_v1');
+    if (rawDest) {
+      const pd = JSON.parse(rawDest);
+      if (Array.isArray(pd) && pd.length) destinations = pd;
+    }
+    if (!destinations.length) destinations = Object.entries(cityNames);
+  } catch {}
+  try {
+    const rawOps = localStorage.getItem('peso_ops_cache_v1');
+    if (rawOps && !state.ops.length) {
+      const po = JSON.parse(rawOps);
+      if (Array.isArray(po) && po.length) state.ops = po;
+    }
+  } catch {}
+}
+
+function mapRawRowsToOperationRecords(rows, pMeta) {
+  return rows.map(r => {
+    const m = pMeta && pMeta[r.id];
+    const rawAwb = String(r.awb || '');
+    const isPlt = r.tipo === 'PALLET' || r.categoria === 'PALLET' || rawAwb.startsWith('PALLET:') || Boolean(m);
+    const cleanAwb = isPlt ? (m?.awb || rawAwb.replace(/^PALLET:/i, '') || r.awb) : r.awb;
+    return {
+      id: r.id,
+      dest: r.destino,
+      vol: r.volumes,
+      kg: Number(r.peso_kg),
+      dg: r.tipo === 'DG' && !isPlt,
+      pallet: isPlt,
+      type: isPlt ? 'PALLET' : r.tipo,
+      category: isPlt ? 'PALLET' : (r.tipo === 'DG' ? 'DG' : ['DELIVERY', 'COMAIL'].includes(r.tipo) ? r.tipo : (r.categoria || null)),
+      awb: cleanAwb,
+      user: users.find(u => u.id === r.usuario_id)?.nome || 'Usuário',
+      editor: users.find(u => u.id === r.editado_por)?.nome,
+      updated: r.atualizada_em,
+      created: r.criada_em,
+      time: showTime(r.criada_em)
+    };
+  });
+}
+
 async function loadOperations(){
-  const rows = await api('operacoes?select=*&order=criada_em.desc');
+  const rows = await api('operacoes?select=*&order=criada_em.desc&limit=35');
   const previous = new Map(state.ops.map(o => [o.id, o]));
   let foundOpen = false;
   state.ops = rows.map(r => {
@@ -1168,23 +1223,69 @@ async function loadOperations(){
         api(`operacoes?id=eq.${encodeURIComponent(r.id)}`, { method: 'PATCH', body: { status: 'FINALIZADA' } }).catch(() => {});
       }
     }
+    let cachedRecs = previous.get(r.id)?.rawRecords || [];
+    if (!cachedRecs.length) {
+      try {
+        const cr = localStorage.getItem('peso_records_cache_' + r.id);
+        if (cr) cachedRecs = JSON.parse(cr) || [];
+      } catch {}
+    }
     return {
       ...r,
       status: effectiveStatus,
       data_operacao: resolvedIso,
       date: showDate(resolvedIso, r.nome),
-      rawRecords: previous.get(r.id)?.rawRecords || [],
+      rawRecords: cachedRecs,
       corrections: previous.get(r.id)?.corrections || [],
-      records: previous.get(r.id)?.records || [],
-      loaded: previous.get(r.id)?.loaded || false
+      records: previous.get(r.id)?.records?.length ? previous.get(r.id).records : cachedRecs,
+      loaded: Boolean(previous.get(r.id)?.loaded || cachedRecs.length > 0)
     };
   });
+  try {
+    const slimOps = state.ops.map(o => ({ id: o.id, nome: o.nome, status: o.status, data_operacao: o.data_operacao, date: o.date, finalizada_em: o.finalizada_em, criada_em: o.criada_em }));
+    localStorage.setItem('peso_ops_cache_v1', JSON.stringify(slimOps));
+  } catch {}
 }
-async function loadRecords(id){const epoch=++recordEpoch;const operation=state.ops.find(o=>o.id===id);const [rows,pMeta,corrs]=await Promise.all([allRows(`pesagens?select=*&operacao_id=eq.${encodeURIComponent(id)}&order=criada_em.asc,id.asc`),fetchPalletMetaForOp(id),fetchCorrectionsForOp(operation||{id})]);if(epoch!==recordEpoch||id!==active)return;if(!operation)return;operation.rawRecords=rows.map(r=>{const m=pMeta&&pMeta[r.id];const rawAwb=String(r.awb||'');const isPlt=r.tipo==='PALLET'||r.categoria==='PALLET'||rawAwb.startsWith('PALLET:')||Boolean(m);const cleanAwb=isPlt?(m?.awb||rawAwb.replace(/^PALLET:/i,'')||r.awb):r.awb;return {id:r.id,dest:r.destino,vol:r.volumes,kg:Number(r.peso_kg),dg:r.tipo==='DG'&&!isPlt,pallet:isPlt,type:isPlt?'PALLET':r.tipo,category:isPlt?'PALLET':(r.tipo==='DG'?'DG':['DELIVERY','COMAIL'].includes(r.tipo)?r.tipo:(r.categoria||null)),awb:cleanAwb,user:users.find(u=>u.id===r.usuario_id)?.nome||'Usuário',editor:users.find(u=>u.id===r.editado_por)?.nome,updated:r.atualizada_em,created:r.criada_em,time:showTime(r.criada_em)}});operation.corrections=corrs||[];applyCorrectionsToOperationRecords(operation);operation.loaded=true;}
+
+async function loadRecords(id){
+  const epoch = ++recordEpoch;
+  const operation = state.ops.find(o => o.id === id);
+  if (!operation) return;
+
+  // 1) Usa cache local de palletMeta e correções imediatamente para não atrasar a exibição das pesagens
+  let localPalletMeta = palletMetaByOp[id] || {};
+  try {
+    const rawPm = localStorage.getItem('peso_pallet_meta_' + id);
+    if (rawPm) localPalletMeta = JSON.parse(rawPm) || {};
+  } catch {}
+
+  const rows = await allRows(`pesagens?select=*&operacao_id=eq.${encodeURIComponent(id)}&order=criada_em.asc,id.asc`);
+  if (epoch !== recordEpoch || id !== active) return;
+
+  operation.rawRecords = mapRawRowsToOperationRecords(rows, localPalletMeta);
+  applyCorrectionsToOperationRecords(operation);
+  operation.loaded = true;
+  try { localStorage.setItem('peso_records_cache_' + id, JSON.stringify(operation.rawRecords)); } catch {}
+  safeRender();
+
+  // 2) Busca em background (sem travar a tela) metadados extras de Pallet e correções da IA na ponte
+  Promise.all([
+    fetchPalletMetaForOp(id).catch(() => localPalletMeta),
+    fetchCorrectionsForOp(operation).catch(() => operation.corrections || [])
+  ]).then(([pMeta, corrs]) => {
+    if (epoch !== recordEpoch || id !== active) return;
+    operation.rawRecords = mapRawRowsToOperationRecords(rows, pMeta);
+    operation.corrections = corrs || [];
+    applyCorrectionsToOperationRecords(operation);
+    try { localStorage.setItem('peso_records_cache_' + id, JSON.stringify(operation.rawRecords)); } catch {}
+    safeRender();
+  });
+}
+
 async function detectCategories(){try{await api('pesagens?select=categoria&limit=0');hasCategories=true}catch(e){if(e.code==='42703'||e.code==='PGRST204')hasCategories=false;else throw e}}
 async function detectDelivery(){try{hasDelivery=await api('rpc/peso_delivery_habilitado',{method:'POST',body:{}})===true}catch(e){if(e.code==='PGRST202'||e.code==='42883')hasDelivery=false;else throw e}}
 async function detectComail(){try{hasComail=await api('rpc/peso_comail_habilitado',{method:'POST',body:{}})===true}catch(e){if(e.code==='PGRST202'||e.code==='42883')hasComail=false;else throw e}}
-async function refresh(){try{syncMalhaDirectFromDb();if(!hasCategories)await detectCategories();if(!hasDelivery)await detectDelivery();if(!hasComail)await detectComail();await loadOperations();if(active&&op())await loadRecords(active);if(active&&!op()){active=null;screen='ops';if(!isFlow())toast('Esta operação já foi excluída pelo prazo de retenção.')}connected=true;safeRender()}catch(e){connected=false;safeRender();}}
+async function refresh(){try{syncMalhaDirectFromDb();await loadOperations();if(active&&op())await loadRecords(active);if(active&&!op()){active=null;screen='ops';if(!isFlow())toast('Esta operação já foi excluída pelo prazo de retenção.')}connected=true;safeRender()}catch(e){connected=false;safeRender();}}
 function scheduleRefresh(){clearTimeout(refreshTimer);refreshTimer=setTimeout(refresh,350)}
 function watchRecords(id){if(!realtime)return;if(recordChannel)realtime.removeChannel(recordChannel);live=false;recordChannel=realtime.channel('pesagens-'+id).on('postgres_changes',{event:'*',schema:'public',table:'pesagens',filter:'operacao_id=eq.'+id},scheduleRefresh).subscribe(status=>{live=status==='SUBSCRIBED';if(!isFlow())safeRender()})}
 function handleIncomingBridgePayload(data){
@@ -1237,7 +1338,66 @@ function setupRealtime(){
       .subscribe();
   }catch{}
 }
-async function boot(){render();try{const [u,d]=await Promise.all([api('usuarios?select=*&ativo=eq.true&order=nome'),api('destinos?select=*&ativo=eq.true&order=codigo'),detectCategories(),detectDelivery(),detectComail(),syncPesosGlobalAuthFromBridge(),syncMalhaDirectFromDb()]);users=mergePesosUsersWithGlobal(u);destinations=d.map(r=>[r.codigo,cityNames[r.codigo]||r.codigo]);await loadOperations();const savedGlobalName=(localStorage.getItem('sistema_aereo_usuario')||'').trim().toUpperCase();let user=users.find(u=>u.id===selectedUser)||(savedGlobalName?users.find(u=>String(u.nome||'').toUpperCase()===savedGlobalName):null);if(user&&hasAuthenticatedPesosSession(user.nome)){selectedUser=user.id;state.name=user.nome;screen='ops'}else{selectedUser=null;state.name='';screen='login'}connected=true;loading=false;setupRealtime();render()}catch(e){connected=false;loading=false;render();toast(errorMessage(e))}}
+async function boot(){
+  hydrateCachedOpsAndRecords();
+  const savedGlobalName=(localStorage.getItem('sistema_aereo_usuario')||'').trim().toUpperCase();
+  if(users.length&&state.ops.length){
+    let cachedUser=users.find(u=>u.id===selectedUser)||(savedGlobalName?users.find(u=>String(u.nome||'').toUpperCase()===savedGlobalName):null);
+    if(cachedUser&&hasAuthenticatedPesosSession(cachedUser.nome)){
+      selectedUser=cachedUser.id;state.name=cachedUser.nome;screen='ops';loading=false;connected=true;
+    }
+  }
+  render();
+  // Tarefas secundárias em background (não bloqueiam a abertura da tela!)
+  syncPesosGlobalAuthFromBridge().then(()=>{users=mergePesosUsersWithGlobal(users);safeRender()}).catch(()=>{});
+  syncMalhaDirectFromDb().catch(()=>{});
+  detectCategories().catch(()=>{});
+  detectDelivery().catch(()=>{});
+  detectComail().catch(()=>{});
+  try{
+    const [u,d]=await Promise.all([
+      api('usuarios?select=*&ativo=eq.true&order=nome'),
+      api('destinos?select=*&ativo=eq.true&order=codigo'),
+      loadOperations()
+    ]);
+    users=mergePesosUsersWithGlobal(u);
+    destinations=d.map(r=>[r.codigo,cityNames[r.codigo]||r.codigo]);
+    try{
+      localStorage.setItem('peso_users_cache_v1',JSON.stringify(u));
+      localStorage.setItem('peso_dest_cache_v1',JSON.stringify(destinations));
+    }catch{}
+    let user=users.find(u=>u.id===selectedUser)||(savedGlobalName?users.find(u=>String(u.nome||'').toUpperCase()===savedGlobalName):null);
+    if(user&&hasAuthenticatedPesosSession(user.nome)){
+      selectedUser=user.id;
+      state.name=user.nome;
+      if(screen==='login')screen='ops';
+    }else if(!active){
+      selectedUser=null;
+      state.name='';
+      screen='login';
+    }
+    connected=true;
+    loading=false;
+    setupRealtime();
+    render();
+    // Se já houver uma operação aberta, pré-carrega os registros dela em background para abrir em 0ms ao clicar!
+    const openOp=state.ops.find(o=>o.status==='ABERTA');
+    if(openOp&&!openOp.loaded){
+      allRows(`pesagens?select=*&operacao_id=eq.${encodeURIComponent(openOp.id)}&order=criada_em.asc,id.asc`).then(rows=>{
+        openOp.rawRecords=mapRawRowsToOperationRecords(rows,palletMetaByOp[openOp.id]||{});
+        applyCorrectionsToOperationRecords(openOp);
+        openOp.loaded=true;
+        try{localStorage.setItem('peso_records_cache_'+openOp.id,JSON.stringify(openOp.rawRecords))}catch{}
+        if(active===openOp.id)safeRender();
+      }).catch(()=>{});
+    }
+  }catch(e){
+    connected=false;
+    loading=false;
+    render();
+    toast(errorMessage(e));
+  }
+}
 function brand(){
   return `<div class="suite-brand" id="brandHome" title="Voltar para Operações">
     <div class="suite-logo-box">
@@ -1276,7 +1436,7 @@ function shell(content){
     <div class="suite-topbar-inner">
       <div class="suite-brand-wrap">
         ${brand()}
-        ${curOp ? `<button type="button" class="suite-op-pill" id="topOpSwitchPill" title="Clique para alternar entre operações ativas ou criar outra operação" style="cursor:pointer;border:1px solid rgba(16,185,129,.35)">${esc(curOp.nome)} ⇄</button>` : ''}
+        ${curOp ? `<button type="button" class="suite-op-pill" id="topOpSwitchPill" title="Voltar para Operações" style="cursor:pointer;border:1px solid rgba(16,185,129,.35)">${esc(curOp.nome)}</button>` : ''}
       </div>
       ${fedexCenterLogoHtml()}
       <div class="suite-actions">
@@ -1440,7 +1600,7 @@ function openPesosAuthModal(userId){
 }
 function render(){if(stage){wizard();return}if(scanning)return;if(loading){shell('<div class="empty">Conectando à operação da equipe…</div>');return}if(!connected&&!users.length){shell('<section class="login card"><h1>Vamos conectar?</h1><p>Não foi possível acessar o banco neste painel restrito. Confira sua conexão ou abra a demonstração para testar o histórico por destino.</p><button id="retry" class="primary wide">Tentar novamente</button><button id="demoBtn" class="secondary wide" style="margin-top:10px">Testar prévia com dados de exemplo →</button></section>');$('#retry').onclick=()=>{loading=true;boot()};$('#demoBtn').onclick=loadDemoMode;return}
 if(screen==='login'){loadPesosGlobalAuthLocal();users=mergePesosUsersWithGlobal(users);shell(`<section class="login"><span class="eyebrow">ACESSO AO SISTEMA</span><h1>Quem está pesando?</h1><p>Selecione seu nome para identificar os lançamentos.</p><div class="card user-list">${users.map(u=>{const nUp=String(u.nome||'').trim().toUpperCase();const hasP=Boolean(globalUsuariosAuthDb[nUp]?.senha&&String(globalUsuariosAuthDb[nUp].senha).trim().length>0);return `<button class="user-option" data-user="${esc(u.id)}"><span class="avatar">${esc(u.nome.slice(0,2))}</span><span style="display:flex;flex-direction:column;gap:2px"><b>${esc(u.nome)}</b>${hasP?'':'<small style="font-size:10px;font-weight:700;color:#f59e0b">1º Acesso</small>'}</span><span class="arrow">→</span></button>`}).join('')}</div></section>`);document.querySelectorAll('[data-user]').forEach(b=>b.onclick=()=>openPesosAuthModal(b.dataset.user));return}
-if(screen==='ops'){const open=state.ops.filter(o=>o.status==='ABERTA'),closed=state.ops.filter(o=>o.status==='FINALIZADA'),rows=historyView?closed:open;shell(`<div class="intro"><div><span class="eyebrow">SEU ESPAÇO DE TRABALHO</span><h1>Olá, ${esc(state.name)}.</h1><p>${historyView?'Operações finalizadas nas últimas 48 horas.':'Múltiplas operações ativas permitidas sem conflito.'}</p></div><button class="primary" id="create">＋ Criar operação</button></div><nav class="tabs"><button id="tabOpen" class="${!historyView?'active':''}">Em andamento (${open.length})</button><button id="tabHistory" class="${historyView?'active':''}">Histórico 48h (${closed.length})</button><button id="reload" class="tab-reload-btn" title="Atualizar operações" aria-label="Atualizar operações">↻</button></nav>${rows.map(o=>o.status==='ABERTA'?`<button class="op" data-op="${esc(o.id)}"><div><span class="green">● Em andamento</span><strong>${esc(o.nome)}</strong><span class="small muted">${esc(o.date)} · Entrar para lançar e conferir pesos</span></div><span class="arrow">→</span></button>`:`<div class="op op-history-card"><div class="op-history-info" data-op="${esc(o.id)}"><strong>${esc(o.nome)}</strong><span class="small muted">Finalizada • No histórico por 48h${o.finalizada_em?' · Finalizada às '+showTime(o.finalizada_em):(o.date?' · '+esc(o.date):'')}</span></div><div class="op-history-actions"><button type="button" class="btn-reopen-op" data-reopen-op="${esc(o.id)}">Reabrir operação</button><button type="button" class="btn-consult-op" data-op="${esc(o.id)}">Consultar →</button></div></div>`).join('')||`<div class="card empty">${historyView?'Nenhuma operação no histórico de 48h.':'Nenhuma operação aberta. Crie a operação do dia para começar.'}</div>`}`);$('#create').onclick=create;$('#tabOpen').onclick=()=>{historyView=false;render()};$('#tabHistory').onclick=()=>{historyView=true;render()};$('#reload').onclick=refresh;document.querySelectorAll('[data-op]').forEach(b=>b.onclick=()=>enterOperation(b.dataset.op));document.querySelectorAll('[data-reopen-op]').forEach(b=>b.onclick=e=>{e.stopPropagation();reopenFromHistory(b.dataset.reopenOp)});return}
+if(screen==='ops'){const open=state.ops.filter(o=>o.status==='ABERTA'),closed=state.ops.filter(o=>o.status==='FINALIZADA'),rows=historyView?closed:open;shell(`<div class="intro"><div><span class="eyebrow">SEU ESPAÇO DE TRABALHO</span><h1>Olá, ${esc(state.name)}.</h1><p>${historyView?'Operações finalizadas nas últimas 48 horas.':'Uma equipe. Uma operação. Todos os pesos.'}</p></div><button class="primary" id="create">＋ Criar operação</button></div><nav class="tabs"><button id="tabOpen" class="${!historyView?'active':''}">Em andamento (${open.length})</button><button id="tabHistory" class="${historyView?'active':''}">Histórico 48h (${closed.length})</button><button id="reload" class="tab-reload-btn" title="Atualizar operações" aria-label="Atualizar operações">↻</button></nav>${rows.map(o=>o.status==='ABERTA'?`<button class="op" data-op="${esc(o.id)}"><div><span class="green">● Em andamento</span><strong>${esc(o.nome)}</strong><span class="small muted">${esc(o.date)} · Entrar para lançar e conferir pesos</span></div><span class="arrow">→</span></button>`:`<div class="op op-history-card"><div class="op-history-info" data-op="${esc(o.id)}"><strong>${esc(o.nome)}</strong><span class="small muted">Finalizada • No histórico por 48h${o.finalizada_em?' · Finalizada às '+showTime(o.finalizada_em):(o.date?' · '+esc(o.date):'')}</span></div><div class="op-history-actions"><button type="button" class="btn-reopen-op" data-reopen-op="${esc(o.id)}">Reabrir operação</button><button type="button" class="btn-consult-op" data-op="${esc(o.id)}">Consultar →</button></div></div>`).join('')||`<div class="card empty">${historyView?'Nenhuma operação no histórico de 48h.':'Nenhuma operação aberta. Crie a operação do dia para começar.'}</div>`}`);$('#create').onclick=create;$('#tabOpen').onclick=()=>{historyView=false;render()};$('#tabHistory').onclick=()=>{historyView=true;render()};$('#reload').onclick=refresh;document.querySelectorAll('[data-op]').forEach(b=>b.onclick=()=>enterOperation(b.dataset.op));document.querySelectorAll('[data-reopen-op]').forEach(b=>b.onclick=e=>{e.stopPropagation();reopenFromHistory(b.dataset.reopenOp)});return}
 const o=op();if(!o){screen='ops';render();return}const t=sum(o.records),closed=o.status==='FINALIZADA';shell(`<button class="back" id="back">← Todas as operações</button><div class="intro"><div><span class="eyebrow">${esc(o.date)} · ${closed?'OPERAÇÃO FINALIZADA':'OPERAÇÃO EM ANDAMENTO'}</span><h1>${esc(o.nome)}</h1><p>${closed?'Relatório disponível. Reabra para corrigir lançamentos.':'Pesagens reunidas por destino.'}</p></div>${closed?'':`<div class="operation-actions priority-actions">${hasCategories?`<div class="main-types"><button class="primary" id="insertBox" ${!o.loaded?'disabled':''}><svg class="type-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="M3 8v10l9 5 9-5V8M12 13v10M7.5 5.5l9 5v4"/></svg><span>INSERIR CAIXA</span></button><button class="primary" id="insertBag" ${!o.loaded?'disabled':''}><svg class="type-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M8 3h8l-2 4h-4L8 3Z"/><path d="M9 7h6M10 7C9 10 4 13 4 18c0 3 3 4 8 4s8-1 8-4c0-5-5-8-6-11"/><path d="m14 8 3 2M9 16c0-2 1-3 2-4"/></svg><span>INSERIR SACA</span></button></div><div class="other-types-label">OUTROS TIPOS</div><div class="special-types"><button class="secondary" id="insertdg" ${!o.loaded?'disabled':''}>DG</button><button class="secondary" id="insertPallet" ${!o.loaded?'disabled':''}>PALLET</button>${hasDelivery?`<button class="secondary" id="insertDelivery" ${!o.loaded?'disabled':''}>DELIVERY</button>`:''}${hasComail?`<button class="secondary" id="insertComail" ${!o.loaded?'disabled':''}>COMAIL</button>`:''}</div>`:`<button class="primary" id="insert" ${!o.loaded?'disabled':''}>＋ Inserir peso</button><button class="secondary" id="insertdg" ${!o.loaded?'disabled':''}>▣ INSERIR DG</button><button class="secondary" id="insertPallet" ${!o.loaded?'disabled':''}>▣ INSERIR PALLET</button>`}</div>`}</div>${!connected?'<div class="connection-warning">Sem conexão: os valores exibidos podem estar desatualizados.</div>':''}<div class="stats"><div class="card stat"><span>Volumes pesados</span><strong>${t.vol}</strong></div><div class="card stat"><span>Peso total · kg</span><strong>${fmt(t.kg)}</strong></div><div class="card stat"><span>Lançamentos</span><strong>${o.records.length}</strong></div></div>${specialStatsHtml(o)}<div class="toolbar"><button class="secondary" id="export" ${!o.loaded?'disabled':''}>↓ Exportar Excel</button><button class="plain" id="reload">↻ Atualizar</button><button class="${closed?'secondary':'plain'}" id="statusAction">${closed?'Reabrir operação':'Finalizar operação'}</button></div><div class="board-switcher"><div class="board-tabs" role="tablist"><button type="button" class="board-tab ${boardTab==='dest'?'active':''}" id="tabBoardDest">Totais por destino (${grouped(o.records).length})</button><button type="button" class="board-tab ${boardTab==='recent'?'active':''}" id="tabBoardRecent">Últimos lançamentos (${o.records.length})</button></div><div class="swipe-hint">← Deslize para o lado para alternar entre as listas →</div></div><div class="grid swipe-grid" id="boardGrid"><section class="card board-panel ${boardTab==='dest'?'':'hidden-mobile'}"><div class="sectionhead"><h2>Totais por destino</h2><span class="chip" id="destCountBadge">${grouped(o.records).length} praças · kg</span></div><div class="filter-bar"><input type="search" id="destSummarySearch" class="input filter-search" placeholder="Buscar código ou cidade (ex.: BELA, Manaus)…" autocomplete="off" value="${esc(destSummaryQuery)}"></div><div id="destSummaryListContainer">${renderDestSummaryRows(o)}</div><div class="total"><span>Total geral</span><span>${fmt(t.kg)} kg</span></div><button type="button" id="btnClearCorrections" class="btn-clear-corr ${(o.corrections&&o.corrections.length)?'':'idle'}"><span>↺ Limpar correção${(o.corrections&&o.corrections.length)?` (${o.corrections.length} ativa${o.corrections.length>1?'s':''})`:''}</span></button></section><section class="card board-panel ${boardTab==='recent'?'':'hidden-mobile'}"><div class="sectionhead"><h2>Últimos lançamentos</h2><span class="small muted" id="recentCountLabel">Mais recentes</span></div><div class="filter-bar"><input type="search" id="recordSearch" class="input filter-search" placeholder="Buscar destino, AWB ou colega…" autocomplete="off" value="${esc(recentQuery)}"><div class="filter-chips">${[['ALL','Todos'],['CAIXA','CAIXA'],['SACA','SACA'],['PALLET','PALLET'],['DG','DG'],['DELIVERY','DELIVERY'],['COMAIL','COMAIL']].map(([k,label])=>`<button type="button" class="filter-chip ${recentFilter===k?'active':''}" data-filter-kind="${k}">${label}</button>`).join('')}</div></div><div id="recentListContainer">${renderRecentRows(o,closed)}</div></section></div>`);
 $('#back').onclick=()=>{screen='ops';active=null;if(recordChannel){realtime.removeChannel(recordChannel);recordChannel=null}render()};$('#reload').onclick=refresh;$('#statusAction').onclick=changeStatus;$('#export').onclick=exportExcel;if($('#btnClearCorrections'))$('#btnClearCorrections').onclick=clearCorrectionsForActiveOp;
 if($('#tabBoardDest'))$('#tabBoardDest').onclick=()=>{boardTab='dest';render()};
@@ -1450,7 +1610,7 @@ if($('#recordSearch'))$('#recordSearch').oninput=e=>{recentQuery=e.target.value;
 document.querySelectorAll('[data-filter-kind]').forEach(b=>b.onclick=()=>{recentFilter=b.dataset.filterKind;document.querySelectorAll('[data-filter-kind]').forEach(x=>x.classList.toggle('active',x.dataset.filterKind===recentFilter));updateRecentList()});
 bindSwipeBoard();
 if(!closed){if(hasCategories){if(hasComail)$('#insertComail').onclick=()=>startDraft('COMAIL');if(hasDelivery)$('#insertDelivery').onclick=()=>startDraft('DELIVERY');$('#insertBox').onclick=()=>startDraft('CAIXA');$('#insertBag').onclick=()=>startDraft('SACA')}else $('#insert').onclick=()=>startDraft(null);$('#insertdg').onclick=()=>{unlockAudio();startDraft('DG')};if($('#insertPallet'))$('#insertPallet').onclick=()=>{unlockAudio();startDraft('PALLET')};bindRecordActions()}}
-async function enterOperation(id){active=id;screen='operation';render();watchRecords(id);try{const cur=state.ops.find(x=>x.id===id);if(cur&&cur.status==='ABERTA'){await ensureDbOperationOpenForWrite(cur.id,cur.nome,cur.data_operacao)}await loadRecords(id);safeRender()}catch(e){toast(errorMessage(e));connected=false;safeRender()}}
+async function enterOperation(id){active=id;screen='operation';render();watchRecords(id);try{await loadRecords(id);safeRender()}catch(e){toast(errorMessage(e));connected=false;safeRender()}}
 function modal(html){const layer=document.createElement('div');layer.className='modal';layer.innerHTML=`<div class="card">${html}</div>`;document.body.append(layer);return layer}
 function filterDestGroups(records){const q=destSummaryQuery.trim().toLocaleLowerCase();const all=grouped(records);if(!q)return all;return all.filter(([d])=>`${d} ${cityNames[d]||''}`.toLocaleLowerCase().includes(q))}
 function destCorrectionSummaryHtml(destRows){
@@ -1585,7 +1745,7 @@ function compositionHtml(records){return `<div class="composition">${categoryGro
 function classifyLegacy(id,r){const layer=modal(`<h2>Classificar lançamento anterior</h2><p>Este registro foi criado antes da separação de caixas e sacas. Escolha a categoria correta.</p><button class="primary wide" id="legacyBox">CAIXA · ${r.vol} volume(s)</button><button class="secondary wide" id="legacyBag" style="margin-top:10px" ${r.vol!==1?'disabled':''}>SACA · 1 volume</button>${r.vol!==1?'<p class="small">Para manter a quantidade, registros com vários volumes não podem ser convertidos em uma única saca.</p>':''}<button class="plain wide" id="legacyKeep">Editar sem classificar</button><button class="plain wide" id="legacyCancel">Cancelar</button>`);$('#legacyBox').onclick=()=>{layer.remove();startEdit(id,'CAIXA')};$('#legacyBag').onclick=()=>{layer.remove();startEdit(id,'SACA')};$('#legacyKeep').onclick=()=>{layer.remove();startEdit(id,null)};$('#legacyCancel').onclick=()=>layer.remove()}
 function startDraft(kind){if(kind==='COMAIL'&&!hasComail){toast('Atualize o aplicativo para habilitar COMAIL.');return}if(kind==='DELIVERY'&&!hasDelivery){toast('Atualize o aplicativo para habilitar DELIVERY.');return}const isDG=kind==='DG',isPallet=kind==='PALLET';category=kind;if(!navigator.onLine||!connected){toast('Conecte-se à internet para lançar pesos.');return}dgMode=isDG;palletMode=isPallet;edit=null;editVersion=null;awb='';allowDuplicatePalletAwb=false;chosen='';query='';num='';draftKgStr='';vol=(isDG||kind==='SACA')?1:0;draftId=crypto.randomUUID();if(isDG||isPallet){stage=0;scanScreen()}else{stage=1;wizard()}}
 function startEdit(id,selectedCategory=undefined){const r=op()?.records.find(r=>r.id===id);if(!r)return;const rKind=recordKind(r);if(hasCategories&&!r.dg&&!r.pallet&&rKind!=='PALLET'&&!r.category&&selectedCategory===undefined){classifyLegacy(id,r);return}category=['DELIVERY','COMAIL','PALLET'].includes(rKind)?rKind:r.dg?'DG':(selectedCategory===undefined?r.category:selectedCategory);dgMode=Boolean(r.dg&&category==='DG');palletMode=category==='PALLET';awb=r.awb||'';allowDuplicatePalletAwb=false;edit=r.id;editVersion=r.updated;chosen=r.dest;vol=r.vol;num='';draftKgStr=String(r.kg||'').replace('.',',');query='';draftId=r.id;if(dgMode||palletMode){stage=0;scanScreen()}else{stage=1;wizard()}}
-async function deleteRecord(id){const o=op(),r=o?.records.find(r=>r.id===id);if(!r)return;if(!await ask('Excluir lançamento?',`${r.dest} · ${r.vol} vol. · ${fmt(r.kg)} kg${r.awb?' · AWB '+r.awb:''}. Este lançamento será removido dos totais.`, 'Excluir'))return;try{await ensureDbOperationOpenForWrite(o.id,o.nome,o.data_operacao);const result=await api(`pesagens?id=eq.${id}&atualizada_em=eq.${encodeURIComponent(r.updated)}`,{method:'DELETE'});if(!result.length)throw Error('Este lançamento foi alterado ou excluído por outro colega. Atualize e confira.');if(r.pallet||recordKind(r)==='PALLET')await savePalletMetaForOp(o.id,id,null);await refresh();if(destDetail&&!op()?.records.some(x=>x.dest===destDetail.dest))closeActiveDetailModal();if(specialDetail&&!specialRecords(op(),specialDetail.kind).length)closeActiveDetailModal();toast('Lançamento excluído.')}catch(e){toast(errorMessage(e));await refresh()}}
+async function deleteRecord(id){const o=op(),r=o?.records.find(r=>r.id===id);if(!r)return;if(!await ask('Excluir lançamento?',`${r.dest} · ${r.vol} vol. · ${fmt(r.kg)} kg${r.awb?' · AWB '+r.awb:''}. Este lançamento será removido dos totais.`, 'Excluir'))return;try{const result=await api(`pesagens?id=eq.${id}&atualizada_em=eq.${encodeURIComponent(r.updated)}`,{method:'DELETE'});if(!result.length)throw Error('Este lançamento foi alterado ou excluído por outro colega. Atualize e confira.');if(r.pallet||recordKind(r)==='PALLET')await savePalletMetaForOp(o.id,id,null);await refresh();if(destDetail&&!op()?.records.some(x=>x.dest===destDetail.dest))closeActiveDetailModal();if(specialDetail&&!specialRecords(op(),specialDetail.kind).length)closeActiveDetailModal();toast('Lançamento excluído.')}catch(e){toast(errorMessage(e));await refresh()}}
 function wizard(){const steps=palletMode?4:(category==='SACA'?2:3);const stepNo=palletMode?(stage+1):(dgMode?(stage===1?2:3):(category==='SACA'?(stage===1?1:2):stage));const titles=['','Qual é o destino?','Quantos volumes?','Qual é o peso?'];app.innerHTML=`<section class="step"><div class="stepin"><div class="stephead"><button class="back" id="prev">← ${stage===1?'Cancelar':'Voltar'}</button><span class="eyebrow">${edit?'EDITANDO':'INSERINDO'} ${esc(category||'PESO')} · ${stepNo} DE ${steps}</span><button class="plain" id="close" aria-label="Cancelar lançamento">✕</button></div><div class="progress">${Array.from({length:steps},(_,i)=>i+1).map(i=>`<i class="${i<=stepNo?'on':''}"></i>`).join('')}</div><h1>${titles[stage]}</h1>${dgMode?`<div class="dg-awb">INSERINDO DG · AWB ${esc(awb)} · 1 volume</div>`:palletMode?`<div class="dg-awb special-kind">${edit?'EDITANDO':'INSERINDO'} PALLET · AWB ${esc(awb)}</div>`:category==='SACA'?'<div class="dg-awb">SACA · 1 volume automático</div>':category==='CAIXA'?'<div class="dg-awb">CAIXA</div>':category==='DELIVERY'?'<div class="dg-awb special-kind">'+(edit?'EDITANDO':'INSERINDO')+' DELIVERY</div>':category==='COMAIL'?'<div class="dg-awb special-kind">'+(edit?'EDITANDO':'INSERINDO')+' COMAIL</div>':''}<p>${stage===1?'Busque e selecione um destino cadastrado.':stage===2?(palletMode?'Informe a quantidade de volumes do pallet.':'Informe a quantidade que está pesando.'):'Informe o peso total medido na balança.'}</p>${stage>1?`<div class="context"><span class="chip">↗ ${esc(chosen)}</span>${stage===3?`<span class="chip">${vol} volumes</span>`:''}</div>`:''}${stage===1?`<input id="search" class="input" placeholder="Digite o código ou a cidade" autocomplete="off" value="${esc(query)}"><div class="destlist" id="destlist"></div>${chosen?`<button class="primary wide confirm" id="nextStage1">OK · Continuar com ${esc(chosen)} →</button>`:''}`:`<div class="number" aria-live="polite">${esc(num||'0')}<span>${stage===2?'vol.':'kg'}</span></div><div class="keys">${['1','2','3','4','5','6','7','8','9',stage===3?',':'','0','⌫'].map(k=>k?`<button class="key ${k==='⌫'||k===','?'utility':''}" data-key="${k}" aria-label="${k==='⌫'?'Apagar último dígito':k}">${k}</button>`:'<div></div>').join('')}</div><button class="primary wide confirm" id="next" ${!(Number(num.replace(',','.'))>0)?'disabled':''}>${stage===2?'OK · Confirmar volumes →':'OK · Salvar pesagem ✓'}</button>`}</div></section>`;
 $('#close').onclick=()=>{if(saving)return;stage=0;render()};$('#prev').onclick=()=>{if(saving)return;if(stage===1){if((dgMode||palletMode)&&!edit){stage=0;scanScreen()}else{stage=0;render()}}else if(stage===2){stage=1;wizard()}else{draftKgStr=num;stage=(dgMode||category==='SACA')?1:2;num=String(vol);wizard()}};
 if(stage===1){list();$('#search').oninput=e=>{query=e.target.value;list()};if($('#nextStage1'))$('#nextStage1').onclick=next}else document.querySelectorAll('[data-key]').forEach(b=>b.onclick=()=>key(b.dataset.key));if($('#next'))$('#next').onclick=next;}
@@ -1593,7 +1753,7 @@ function destinationAllowed(code){if(category==='SACA')return code!=='BSBA CAIXA
 function list(){if(chosen&&!destinationAllowed(chosen)){chosen=''}const q=query.trim().toLocaleLowerCase();const found=destinations.filter(d=>destinationAllowed(d[0])&&d.join(' ').toLocaleLowerCase().includes(q));$('#destlist').innerHTML=found.map(([d,n])=>{const mInfo=resolveDestMalhaInfo(d);return `<button class="dest ${chosen===d?'selected':''}" data-dest="${d}"><span><b>${d}</b><small>${n}</small></span><span class="dest-right">${ciaLogoBadgeHtml(mInfo.cia)}${origBadgeHtml(mInfo.orig)}<span class="dest-arrow-ind">${chosen===d?'✓':'→'}</span></span></button>`}).join('')||'<div class="empty">Nenhum destino cadastrado encontrado.</div>';document.querySelectorAll('[data-dest]').forEach(b=>b.onclick=()=>{if(stage!==1||saving)return;chosen=b.dataset.dest;$('#search')?.blur();next()})}
 function key(k){if(saving)return;if(k==='⌫')num=num.slice(0,-1);else if(k===','){if(!num.includes(','))num=(num||'0')+','}else{if(num.replace(',','').length>=9)return;if(num.includes(',')&&num.split(',')[1].length>=3)return;num=num==='0'?k:num+k}if(stage===3)draftKgStr=num;wizard()}
 async function persistPesagemRecord(o,body,isPlt){
-  await ensureDbOperationOpenForWrite(o.id,o.nome,o.data_operacao);
+  
   const trySave=async(payload)=>{
     if(edit){
       const result=await api(`pesagens?id=eq.${edit}&atualizada_em=eq.${encodeURIComponent(editVersion)}`,{method:'PATCH',body:{...payload,editado_por:selectedUser}});
