@@ -1151,137 +1151,34 @@ async function api(path,{method='GET',body,prefer='return=representation'}={}){i
 async function allRows(path){const result=[];for(let offset=0;;offset+=500){const rows=await api(`${path}${path.includes('?')?'&':'?'}limit=500&offset=${offset}`);result.push(...rows);if(rows.length<500)break}return result}
 function isFlow(){return stage>0||scanning||saving}
 function safeRender(){if(!isFlow()&&!document.querySelector('.modal'))render();if(specialDetail)updateSpecialDetail();if(destDetail)updateDestDetail()}
-let multiActiveOpsMap = {};
-try {
-  const rawM = localStorage.getItem('peso_multi_active_ops_v1');
-  if (rawM) multiActiveOpsMap = JSON.parse(rawM) || {};
-} catch {}
-
-function saveMultiActiveOpsLocal() {
-  try {
-    localStorage.setItem('peso_multi_active_ops_v1', JSON.stringify(multiActiveOpsMap));
-  } catch {}
-}
-
-async function syncMultiActiveOpsFromBridge() {
-  try {
-    const res = await fetch(`${SUITE_BRIDGE_URL}/rest/v1/minutas?select=dados&id=eq.__SYS_PESOS_MULTI_OPS__`, {
-      headers: {
-        apikey: SUITE_BRIDGE_KEY,
-        Authorization: `Bearer ${SUITE_BRIDGE_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      cache: 'no-store'
-    });
-    if (res.ok) {
-      const rows = await res.json();
-      if (Array.isArray(rows) && rows[0] && rows[0].dados && rows[0].dados.ops) {
-        const cloudOps = rows[0].dados.ops;
-        for (const [k, v] of Object.entries(cloudOps)) {
-          if (!multiActiveOpsMap[k] || Number(v.updatedAt || 0) >= Number(multiActiveOpsMap[k].updatedAt || 0)) {
-            multiActiveOpsMap[k] = v;
-          }
-        }
-        saveMultiActiveOpsLocal();
-      }
-    }
-  } catch {}
-}
-
-async function pushMultiActiveOpsToBridge() {
-  saveMultiActiveOpsLocal();
-  try {
-    await fetch(`${SUITE_BRIDGE_URL}/rest/v1/minutas?on_conflict=id`, {
-      method: 'POST',
-      headers: {
-        apikey: SUITE_BRIDGE_KEY,
-        Authorization: `Bearer ${SUITE_BRIDGE_KEY}`,
-        'Content-Type': 'application/json',
-        Prefer: 'resolution=merge-duplicates,return=minimal'
-      },
-      body: JSON.stringify([{
-        id: '__SYS_PESOS_MULTI_OPS__',
-        destino: 'SYS_PESOS_OPS',
-        cia: 'SYS',
-        operador: state.name || 'PESOS',
-        status: 'ATIVA',
-        operacao: 'GLOBAL_PESOS_OPS',
-        dados: { ops: multiActiveOpsMap, updatedAt: Date.now() }
-      }])
-    });
-  } catch {}
-}
-
-async function ensureDbOperationOpenForWrite(opId, nome = '', dataOp = '') {
-  if (!opId) return;
-  try {
-    await api(`operacoes?id=eq.${encodeURIComponent(opId)}`, { method: 'PATCH', body: { status: 'ABERTA' } });
-  } catch (err) {
-    if (err?.code === '23505') {
-      // O banco possui restrição única em status='ABERTA': estaciona outras linhas apenas no nível físico SQL enquanto preserva todas ABERTAS no multiActiveOpsMap!
-      try {
-        const openDbRows = await api(`operacoes?select=id,nome,data_operacao&status=eq.ABERTA`);
-        for (const r of (openDbRows || [])) {
-          if (r.id !== opId) {
-            if (!multiActiveOpsMap[r.id]) {
-              multiActiveOpsMap[r.id] = { id: r.id, nome: r.nome, data_operacao: resolveOpIsoDate(r), status: 'ABERTA', updatedAt: Date.now() };
-            }
-            await api(`operacoes?id=eq.${encodeURIComponent(r.id)}`, { method: 'PATCH', body: { status: 'FINALIZADA' } }).catch(() => {});
-          }
-        }
-        await api(`operacoes?id=eq.${encodeURIComponent(opId)}`, { method: 'PATCH', body: { status: 'ABERTA' } });
-      } catch {}
-    }
-  }
-}
+try { localStorage.removeItem('peso_multi_active_ops_v1'); } catch {}
 
 async function loadOperations(){
-  const [rows] = await Promise.all([
-    api('operacoes?select=*&order=criada_em.desc'),
-    syncMultiActiveOpsFromBridge()
-  ]);
+  const rows = await api('operacoes?select=*&order=criada_em.desc');
   const previous = new Map(state.ops.map(o => [o.id, o]));
-  const seenIds = new Set();
-  const mapped = rows.map(r => {
-    seenIds.add(r.id);
-    const mEntry = multiActiveOpsMap[r.id];
-    const resolvedIso = (mEntry && mEntry.data_operacao) ? mEntry.data_operacao : resolveOpIsoDate(r);
-    const effectiveStatus = (mEntry && mEntry.status) ? mEntry.status : r.status;
-    if (r.status === 'ABERTA' && !mEntry) {
-      multiActiveOpsMap[r.id] = { id: r.id, nome: r.nome, data_operacao: resolvedIso, status: 'ABERTA', updatedAt: Date.now() };
+  let foundOpen = false;
+  state.ops = rows.map(r => {
+    const resolvedIso = resolveOpIsoDate(r);
+    let effectiveStatus = r.status;
+    if (effectiveStatus === 'ABERTA') {
+      if (!foundOpen) {
+        foundOpen = true;
+      } else {
+        effectiveStatus = 'FINALIZADA';
+        api(`operacoes?id=eq.${encodeURIComponent(r.id)}`, { method: 'PATCH', body: { status: 'FINALIZADA' } }).catch(() => {});
+      }
     }
     return {
       ...r,
-      nome: (mEntry && mEntry.nome) || r.nome,
       status: effectiveStatus,
-      finalizada_em: effectiveStatus === 'ABERTA' ? null : r.finalizada_em,
       data_operacao: resolvedIso,
-      date: showDate(resolvedIso, (mEntry && mEntry.nome) || r.nome),
+      date: showDate(resolvedIso, r.nome),
       rawRecords: previous.get(r.id)?.rawRecords || [],
       corrections: previous.get(r.id)?.corrections || [],
       records: previous.get(r.id)?.records || [],
       loaded: previous.get(r.id)?.loaded || false
     };
   });
-  for (const [mId, mVal] of Object.entries(multiActiveOpsMap)) {
-    if (mVal && mVal.status === 'ABERTA' && !seenIds.has(mId)) {
-      const iso = mVal.data_operacao || todayIsoBrazil();
-      mapped.unshift({
-        id: mId,
-        nome: mVal.nome || 'Operação',
-        status: 'ABERTA',
-        finalizada_em: null,
-        data_operacao: iso,
-        date: showDate(iso, mVal.nome),
-        rawRecords: previous.get(mId)?.rawRecords || [],
-        corrections: previous.get(mId)?.corrections || [],
-        records: previous.get(mId)?.records || [],
-        loaded: previous.get(mId)?.loaded || false
-      });
-    }
-  }
-  saveMultiActiveOpsLocal();
-  state.ops = mapped;
 }
 async function loadRecords(id){const epoch=++recordEpoch;const operation=state.ops.find(o=>o.id===id);const [rows,pMeta,corrs]=await Promise.all([allRows(`pesagens?select=*&operacao_id=eq.${encodeURIComponent(id)}&order=criada_em.asc,id.asc`),fetchPalletMetaForOp(id),fetchCorrectionsForOp(operation||{id})]);if(epoch!==recordEpoch||id!==active)return;if(!operation)return;operation.rawRecords=rows.map(r=>{const m=pMeta&&pMeta[r.id];const rawAwb=String(r.awb||'');const isPlt=r.tipo==='PALLET'||r.categoria==='PALLET'||rawAwb.startsWith('PALLET:')||Boolean(m);const cleanAwb=isPlt?(m?.awb||rawAwb.replace(/^PALLET:/i,'')||r.awb):r.awb;return {id:r.id,dest:r.destino,vol:r.volumes,kg:Number(r.peso_kg),dg:r.tipo==='DG'&&!isPlt,pallet:isPlt,type:isPlt?'PALLET':r.tipo,category:isPlt?'PALLET':(r.tipo==='DG'?'DG':['DELIVERY','COMAIL'].includes(r.tipo)?r.tipo:(r.categoria||null)),awb:cleanAwb,user:users.find(u=>u.id===r.usuario_id)?.nome||'Usuário',editor:users.find(u=>u.id===r.editado_por)?.nome,updated:r.atualizada_em,created:r.criada_em,time:showTime(r.criada_em)}});operation.corrections=corrs||[];applyCorrectionsToOperationRecords(operation);operation.loaded=true;}
 async function detectCategories(){try{await api('pesagens?select=categoria&limit=0');hasCategories=true}catch(e){if(e.code==='42703'||e.code==='PGRST204')hasCategories=false;else throw e}}
@@ -1605,12 +1502,12 @@ document.addEventListener('click',event=>{const button=event.target.closest?.('[
 async function ask(title,message,button='Confirmar'){return new Promise(resolve=>{const layer=modal(`<h2>${esc(title)}</h2><p>${esc(message)}</p><button class="primary wide" id="yes">${esc(button)}</button><button class="plain wide" id="no">Cancelar</button>`);const done=val=>{document.removeEventListener('keydown',onKey);layer.remove();resolve(val)};const onKey=e=>{if(e.key==='Escape')done(false)};document.addEventListener('keydown',onKey);layer.querySelector('#yes').onclick=()=>done(true);layer.querySelector('#no').onclick=()=>done(false)})}
 function addUser(){const layer=modal('<h2>Adicionar usuário</h2><form id="userForm"><label class="field" for="userName" style="margin-top:16px">Nome</label><input class="input" id="userName" required maxlength="60" autocomplete="off"><button class="primary wide" style="margin-top:14px" id="userSave">Cadastrar</button><button type="button" class="plain wide" id="cancelUser">Cancelar</button></form>');const close=()=>{document.removeEventListener('keydown',onKey);layer.remove()};const onKey=e=>{if(e.key==='Escape')close()};document.addEventListener('keydown',onKey);layer.querySelector('#cancelUser').onclick=close;layer.querySelector('#userForm').onsubmit=async e=>{e.preventDefault();const nome=layer.querySelector('#userName').value.trim().toUpperCase();if(!nome)return;const saveBtn=layer.querySelector('#userSave');saveBtn.disabled=true;try{await api('usuarios',{method:'POST',body:{nome}});users=await api('usuarios?select=*&ativo=eq.true&order=nome');close();render()}catch(error){saveBtn.disabled=false;toast(errorMessage(error))}}}
 function create(){
-  const localDate=new Intl.DateTimeFormat('pt-BR',{timeZone:'America/Sao_Paulo'}).format(new Date());
-  let defaultName=`Operação ${localDate}`;
-  if(state.ops.some(o=>o.status==='ABERTA'&&o.nome===defaultName)){
-    defaultName=`Operação ${localDate} (Teste)`;
+  if(state.ops.some(o=>o.status==='ABERTA')){
+    toast('Finalize a operação aberta antes de criar outra.');
+    return;
   }
-  const layer=modal(`<h2>Nova operação</h2><form id="newop"><label class="field" for="opname" style="margin-top:16px">Nome da operação</label><input id="opname" class="input" required maxlength="100" value="${esc(defaultName)}"><p class="small">Você pode manter mais de uma operação ativa ao mesmo tempo sem comprometer a operação do dia.</p><button class="primary wide" id="createSave">Criar e entrar →</button><button type="button" class="plain wide" id="cancel">Cancelar</button></form>`);
+  const localDate=new Intl.DateTimeFormat('pt-BR',{timeZone:'America/Sao_Paulo'}).format(new Date());
+  const layer=modal(`<h2>Nova operação</h2><form id="newop"><label class="field" for="opname" style="margin-top:16px">Nome da operação</label><input id="opname" class="input" required maxlength="100" value="Operação ${localDate}"><button class="primary wide" id="createSave">Criar e entrar →</button><button type="button" class="plain wide" id="cancel">Cancelar</button></form>`);
   const id=crypto.randomUUID();
   const close=()=>{document.removeEventListener('keydown',onKey);layer.remove()};
   const onKey=e=>{if(e.key==='Escape')close()};
@@ -1626,35 +1523,15 @@ function create(){
     const saveBtn=layer.querySelector('#createSave');
     saveBtn.disabled=true;
     try{
-      // Registra todas as operações atualmente abertas no mapa multi-operações antes de inserir a nova
-      for(const openOp of state.ops.filter(x=>x.status==='ABERTA')){
-        multiActiveOpsMap[openOp.id]={id:openOp.id,nome:openOp.nome,data_operacao:openOp.data_operacao,status:'ABERTA',updatedAt:Date.now()};
+      if(state.ops.some(o=>o.status==='ABERTA')){
+        toast('Já existe uma operação aberta. Finalize-a primeiro.');
+        close();
+        return;
       }
-      multiActiveOpsMap[id]={id,nome,data_operacao:dataOp,status:'ABERTA',updatedAt:Date.now()};
-      await pushMultiActiveOpsToBridge();
-
-      let inserted=false;
       try{
         await api('operacoes?on_conflict=id',{method:'POST',body:{id,nome,data_operacao:dataOp,criada_por:selectedUser},prefer:'resolution=ignore-duplicates,return=representation'});
-        inserted=true;
       }catch(e1){
-        if(e1?.code==='23505'){
-          // Estaciona apenas no nível físico SQL qualquer outra linha ABERTA para permitir inserir a nova operação sem erro
-          const openDbRows=await api('operacoes?select=id&status=eq.ABERTA').catch(()=>[]);
-          for(const r of (openDbRows||[])){
-            if(r.id!==id)await api(`operacoes?id=eq.${encodeURIComponent(r.id)}`,{method:'PATCH',body:{status:'FINALIZADA'}}).catch(()=>{});
-          }
-          try{
-            await api('operacoes?on_conflict=id',{method:'POST',body:{id,nome,data_operacao:dataOp,criada_por:selectedUser},prefer:'resolution=ignore-duplicates,return=representation'});
-            inserted=true;
-          }catch(e2){
-            await api('operacoes?on_conflict=id',{method:'POST',body:{id,nome,criada_por:selectedUser},prefer:'resolution=ignore-duplicates,return=representation'});
-            inserted=true;
-          }
-        }else{
-          await api('operacoes?on_conflict=id',{method:'POST',body:{id,nome,criada_por:selectedUser},prefer:'resolution=ignore-duplicates,return=representation'});
-          inserted=true;
-        }
+        await api('operacoes?on_conflict=id',{method:'POST',body:{id,nome,criada_por:selectedUser},prefer:'resolution=ignore-duplicates,return=representation'});
       }
       await loadOperations();
       close();
@@ -1667,20 +1544,17 @@ function create(){
   };
 }
 async function reopenFromHistory(id){
-  const target=state.ops.find(x=>x.id===id);
-  if(!target)return;
-  if(!await ask('Reabrir operação?','Esta operação ficará ativa simultaneamente com as demais operações abertas, sem conflito.','Reabrir'))return;
+  if(state.ops.some(o=>o.status==='ABERTA'&&o.id!==id)){
+    toast('Finalize a operação em andamento antes de reabrir outra.');
+    return;
+  }
+  if(!await ask('Reabrir operação?','A equipe poderá corrigir ou incluir pesagens.','Reabrir'))return;
   try{
-    for(const openOp of state.ops.filter(x=>x.status==='ABERTA')){
-      multiActiveOpsMap[openOp.id]={id:openOp.id,nome:openOp.nome,data_operacao:openOp.data_operacao,status:'ABERTA',updatedAt:Date.now()};
-    }
-    multiActiveOpsMap[target.id]={id:target.id,nome:target.nome,data_operacao:target.data_operacao,status:'ABERTA',updatedAt:Date.now()};
-    await pushMultiActiveOpsToBridge();
-    await ensureDbOperationOpenForWrite(target.id,target.nome,target.data_operacao);
+    await api(`operacoes?id=eq.${encodeURIComponent(id)}`,{method:'PATCH',body:{status:'ABERTA'}});
     historyView=false;
     await refresh();
     toast('Operação reaberta.');
-    enterOperation(target.id);
+    enterOperation(id);
   }catch(e){
     toast(errorMessage(e));
     await refresh();
@@ -1688,25 +1562,13 @@ async function reopenFromHistory(id){
 }
 async function changeStatus(){
   const o=op(),isClosed=o.status==='FINALIZADA';
-  if(!await ask(isClosed?'Reabrir operação?':'Finalizar operação?',isClosed?'A equipe poderá corrigir ou incluir pesagens sem fechar as outras operações ativas.':'Os lançamentos desta operação serão bloqueados. As demais operações ativas continuarão abertas normalmente.',isClosed?'Reabrir':'Finalizar'))return;
+  if(isClosed&&state.ops.some(x=>x.status==='ABERTA'&&x.id!==o.id)){
+    toast('Finalize a operação em andamento antes de reabrir esta.');
+    return;
+  }
+  if(!await ask(isClosed?'Reabrir operação?':'Finalizar operação?',isClosed?'A equipe poderá corrigir ou incluir pesagens.':'Os lançamentos serão bloqueados e a operação irá para o histórico de 48h.',isClosed?'Reabrir':'Finalizar'))return;
   try{
-    if(isClosed){
-      for(const openOp of state.ops.filter(x=>x.status==='ABERTA')){
-        multiActiveOpsMap[openOp.id]={id:openOp.id,nome:openOp.nome,data_operacao:openOp.data_operacao,status:'ABERTA',updatedAt:Date.now()};
-      }
-      multiActiveOpsMap[o.id]={id:o.id,nome:o.nome,data_operacao:o.data_operacao,status:'ABERTA',updatedAt:Date.now()};
-      await pushMultiActiveOpsToBridge();
-      await ensureDbOperationOpenForWrite(o.id,o.nome,o.data_operacao);
-    }else{
-      multiActiveOpsMap[o.id]={id:o.id,nome:o.nome,data_operacao:o.data_operacao,status:'FINALIZADA',updatedAt:Date.now()};
-      await pushMultiActiveOpsToBridge();
-      await api(`operacoes?id=eq.${encodeURIComponent(o.id)}`,{method:'PATCH',body:{status:'FINALIZADA'}}).catch(()=>{});
-      // Se houver outra operação aberta no multiActiveOpsMap, ativa ela fisicamente no banco para manter o banco sincronizado
-      const nextOpen=state.ops.find(x=>x.id!==o.id&&multiActiveOpsMap[x.id]?.status==='ABERTA');
-      if(nextOpen){
-        await ensureDbOperationOpenForWrite(nextOpen.id,nextOpen.nome,nextOpen.data_operacao);
-      }
-    }
+    await api(`operacoes?id=eq.${encodeURIComponent(o.id)}`,{method:'PATCH',body:{status:isClosed?'ABERTA':'FINALIZADA'}});
     await refresh();
     toast(isClosed?'Operação reaberta.':'Operação finalizada. Exporte o Excel para guardar o relatório.');
   }catch(e){
