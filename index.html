@@ -419,6 +419,638 @@ let hasCategories=true,hasDelivery=true,hasComail=true,category=null;
 let stage=0,chosen='',num='',draftKgStr='',vol=0,query='',edit=null,dgMode=false,palletMode=false,awb='',allowDuplicatePalletAwb=false,reader=null,cameraEpoch=0,scanning=false,saving=false,draftId=null,editVersion=null;
 const SUITE_BRIDGE_URL='https://megozyczcjpqqozbdqrn.supabase.co';
 const SUITE_BRIDGE_KEY='sb_publishable_76xL9ys9iOhpK7nzNtX5mw_VZD3yKot';
+
+    // =========================================================================
+    // SESSÃO INTELIGENTE DE 2 HORAS + LOGIN ID FEDEX + BIOMETRIA / CHAVE DE ACESSO WINDOWS (WEBAUTHN)
+    // =========================================================================
+    const SA_SESSION_STORAGE_KEY = 'sistema_aereo_sessao_2h_v2';
+    const SA_PASSKEYS_LOCAL_KEY = 'sistema_aereo_passkeys_v1';
+    const SA_SESSION_TTL_MS = 2 * 60 * 60 * 1000; // 2 horas (7.200.000 ms)
+    const SA_DEFAULT_FEDEX_IDS = {
+      'FELIPE': '8953406',
+      'KAIO': '2575760',
+      'JAQUELINE': '3853831'
+    };
+    const SA_DEFAULT_FEDEX_IDS_REVERSE = {
+      '8953406': 'FELIPE',
+      '2575760': 'KAIO',
+      '3853831': 'JAQUELINE'
+    };
+    window.SA_DEFAULT_FEDEX_IDS = SA_DEFAULT_FEDEX_IDS;
+    window.SA_DEFAULT_FEDEX_IDS_REVERSE = SA_DEFAULT_FEDEX_IDS_REVERSE;
+    let _saLastActivityWriteTs = 0;
+
+    window.saObterFedexIdPadrao = function(nomeUsuario, authDbObj) {
+      const n = String(nomeUsuario || '').trim().toUpperCase();
+      if (!n) return '';
+      if (authDbObj && authDbObj[n] && authDbObj[n].fedex_id) {
+        return String(authDbObj[n].fedex_id).trim();
+      }
+      return SA_DEFAULT_FEDEX_IDS[n] || '';
+    };
+
+    window.saResolverUsuarioPorLoginInput = function(rawInput, authDbObj, listaOperadores) {
+      const limpo = String(rawInput || '').trim();
+      if (!limpo) return null;
+      const limpoUp = limpo.toUpperCase();
+      const limpoDigits = limpo.replace(/\D/g, '');
+
+      // 1) Busca pelo ID FedEx cadastrado no banco/objeto de usuários
+      if (authDbObj && typeof authDbObj === 'object') {
+        for (const [k, v] of Object.entries(authDbObj)) {
+          if (!v || v.excluido === true) continue;
+          const nomeOp = String(k || v.nome || '').trim().toUpperCase();
+          const fid = String(v.fedex_id || SA_DEFAULT_FEDEX_IDS[nomeOp] || '').trim();
+          if (fid && (fid.toUpperCase() === limpoUp || (limpoDigits && fid === limpoDigits))) {
+            return nomeOp;
+          }
+        }
+      }
+
+      // 2) Busca no mapa padrão de IDs FedEx (8953406 -> FELIPE, 2575760 -> KAIO, 3853831 -> JAQUELINE)
+      if (SA_DEFAULT_FEDEX_IDS_REVERSE[limpoUp]) {
+        const cand = SA_DEFAULT_FEDEX_IDS_REVERSE[limpoUp];
+        if (!(authDbObj && authDbObj[cand] && authDbObj[cand].excluido === true)) return cand;
+      }
+      if (limpoDigits && SA_DEFAULT_FEDEX_IDS_REVERSE[limpoDigits]) {
+        const cand = SA_DEFAULT_FEDEX_IDS_REVERSE[limpoDigits];
+        if (!(authDbObj && authDbObj[cand] && authDbObj[cand].excluido === true)) return cand;
+      }
+
+      // 3) Fallback caso digite o próprio nome (ex: FELIPE, KAIO, JAQUELINE)
+      if (authDbObj && authDbObj[limpoUp] && authDbObj[limpoUp].excluido !== true) {
+        return limpoUp;
+      }
+      if (Array.isArray(listaOperadores)) {
+        const achou = listaOperadores.find(op => String(op || '').trim().toUpperCase() === limpoUp);
+        if (achou) return String(achou).trim().toUpperCase();
+      }
+      return null;
+    };
+
+    window.saBufferToBase64Url = function(buffer) {
+      const bytes = new Uint8Array(buffer);
+      let binary = '';
+      for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+      return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+    };
+
+    window.saBase64UrlToUint8Array = function(base64url) {
+      const padding = '='.repeat((4 - (base64url.length % 4)) % 4);
+      const base64 = (base64url + padding).replace(/-/g, '+').replace(/_/g, '/');
+      const rawData = atob(base64);
+      const outputArray = new Uint8Array(rawData.length);
+      for (let i = 0; i < rawData.length; ++i) outputArray[i] = rawData.charCodeAt(i);
+      return outputArray;
+    };
+
+    window.saMergePasskeysList = function(listA, listB) {
+      const map = new Map();
+      const addAll = (arr) => {
+        if (!Array.isArray(arr)) return;
+        for (const item of arr) {
+          if (item && item.id && typeof item.id === 'string') {
+            const uName = String(item.usuario || '').trim().toUpperCase();
+            map.set(item.id, {
+              id: item.id,
+              usuario: uName,
+              fedex_id: String(item.fedex_id || SA_DEFAULT_FEDEX_IDS[uName] || ''),
+              apelido: String(item.apelido || 'Aparelho'),
+              criado_em: Number(item.criado_em || Date.now())
+            });
+          }
+        }
+      };
+      addAll(listA);
+      addAll(listB);
+      return Array.from(map.values());
+    };
+
+    window.saLerPasskeysLocaisMap = function() {
+      try {
+        const raw = localStorage.getItem(SA_PASSKEYS_LOCAL_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === 'object') return parsed;
+        }
+      } catch (e) {}
+      return {};
+    };
+
+    window.saSalvarPasskeyLocal = function(entry) {
+      if (!entry || !entry.id) return;
+      const map = window.saLerPasskeysLocaisMap();
+      map[entry.id] = entry;
+      try {
+        localStorage.setItem(SA_PASSKEYS_LOCAL_KEY, JSON.stringify(map));
+      } catch (e) {}
+    };
+
+    window.saObterPasskeysUsuario = function(nomeUsuario, authDbObj) {
+      const nomeUp = String(nomeUsuario || '').trim().toUpperCase();
+      if (!nomeUp) return [];
+      const fromDb = (authDbObj && authDbObj[nomeUp] && Array.isArray(authDbObj[nomeUp].passkeys))
+        ? authDbObj[nomeUp].passkeys
+        : [];
+      const localMap = window.saLerPasskeysLocaisMap();
+      const fromLocal = Object.values(localMap).filter(p => p && String(p.usuario || '').trim().toUpperCase() === nomeUp);
+      return window.saMergePasskeysList(fromDb, fromLocal);
+    };
+
+    window.saObterTodasPasskeysConhecidas = function(authDbObj) {
+      let todas = Object.values(window.saLerPasskeysLocaisMap());
+      if (authDbObj && typeof authDbObj === 'object') {
+        for (const [k, v] of Object.entries(authDbObj)) {
+          if (v && !v.excluido && Array.isArray(v.passkeys)) {
+            const uName = String(k || v.nome || '').trim().toUpperCase();
+            const norm = v.passkeys.map(p => ({ ...p, usuario: p.usuario || uName, fedex_id: p.fedex_id || v.fedex_id || SA_DEFAULT_FEDEX_IDS[uName] || '' }));
+            todas = window.saMergePasskeysList(todas, norm);
+          }
+        }
+      }
+      return todas;
+    };
+
+    window.saWebAuthnDisponivel = function() {
+      return Boolean(window.PublicKeyCredential && navigator.credentials && window.isSecureContext);
+    };
+
+    window.saCadastrarBiometriaPasskey = async function(nomeUsuario, authDbObj, saveAndSyncCallback) {
+      const nomeUp = String(nomeUsuario || '').trim().toUpperCase();
+      if (!nomeUp) throw new Error('Informe um usuário válido.');
+      if (!window.saWebAuthnDisponivel()) {
+        throw new Error('Para criar Face ID / Chave de Acesso, acesse o sistema pelo link direto em HTTPS (Netlify) ou localhost.');
+      }
+      const fedexId = window.saObterFedexIdPadrao(nomeUp, authDbObj) || nomeUp;
+      const challenge = new Uint8Array(32);
+      crypto.getRandomValues(challenge);
+      const userIdBytes = new TextEncoder().encode('FEDEX_ID_' + fedexId + '_' + nomeUp);
+
+      const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+      const isAndroid = /Android/i.test(navigator.userAgent);
+      const apelidoAparelho = isIOS
+        ? 'iPhone / iPad (Face ID / Touch ID)'
+        : (isAndroid ? 'Android (Biometria / Digital)' : 'Windows Hello / Chave de Acesso PC');
+
+      const createOptions = {
+        publicKey: {
+          challenge,
+          rp: { name: 'Sistema Aéreo FedEx Linehaul' },
+          user: {
+            id: userIdBytes,
+            name: fedexId + ' (' + nomeUp + ')',
+            displayName: nomeUp + ' — ID FedEx ' + fedexId
+          },
+          pubKeyCredParams: [
+            { type: 'public-key', alg: -7 },
+            { type: 'public-key', alg: -257 }
+          ],
+          authenticatorSelection: {
+            userVerification: 'preferred',
+            residentKey: 'preferred',
+            requireResidentKey: false
+          },
+          timeout: 60000,
+          attestation: 'none'
+        }
+      };
+
+      const cred = await navigator.credentials.create(createOptions);
+      if (!cred || !cred.rawId) throw new Error('Criação da Chave de Acesso / Biometria não foi concluída.');
+
+      const credId = window.saBufferToBase64Url(cred.rawId);
+      const novaEntry = {
+        id: credId,
+        usuario: nomeUp,
+        fedex_id: fedexId,
+        apelido: apelidoAparelho,
+        criado_em: Date.now()
+      };
+
+      window.saSalvarPasskeyLocal(novaEntry);
+      if (authDbObj && typeof authDbObj === 'object') {
+        if (!authDbObj[nomeUp]) authDbObj[nomeUp] = { nome: nomeUp, fedex_id: fedexId, senha: '', email: '' };
+        if (!authDbObj[nomeUp].fedex_id) authDbObj[nomeUp].fedex_id = fedexId;
+        authDbObj[nomeUp].passkeys = window.saMergePasskeysList(authDbObj[nomeUp].passkeys, [novaEntry]);
+        authDbObj[nomeUp].atualizado_em = Date.now();
+      }
+      if (typeof saveAndSyncCallback === 'function') {
+        await saveAndSyncCallback();
+      }
+      return novaEntry;
+    };
+
+    window.saAutenticarBiometriaPasskey = async function(loginInputOpcional, authDbObj, listaOperadores) {
+      if (!window.saWebAuthnDisponivel()) {
+        throw new Error('O login por Face ID / Chave de Acesso requer abrir o sistema pelo link seguro HTTPS (Netlify) ou localhost.');
+      }
+      const nomeAlvo = loginInputOpcional
+        ? (window.saResolverUsuarioPorLoginInput(loginInputOpcional, authDbObj, listaOperadores) || String(loginInputOpcional).trim().toUpperCase())
+        : '';
+      const listaPasskeys = nomeAlvo
+        ? window.saObterPasskeysUsuario(nomeAlvo, authDbObj)
+        : window.saObterTodasPasskeysConhecidas(authDbObj);
+
+      // Usa apenas credenciais salvas localmente neste aparelho no allowCredentials (evita que o Windows tente procurar no PC uma chave criada no celular e dê "Algo deu errado")
+      const localMap = window.saLerPasskeysLocaisMap();
+      const listaLocal = Object.values(localMap).filter(p => p && p.id && (!nomeAlvo || String(p.usuario || '').trim().toUpperCase() === nomeAlvo));
+      const allowCredentials = listaLocal.map(p => {
+        try {
+          return {
+            id: window.saBase64UrlToUint8Array(p.id),
+            type: 'public-key',
+            transports: ['internal', 'hybrid']
+          };
+        } catch (e) { return null; }
+      }).filter(Boolean);
+
+      const challenge = new Uint8Array(32);
+      crypto.getRandomValues(challenge);
+
+      const getOptions = {
+        publicKey: {
+          challenge,
+          userVerification: 'preferred',
+          timeout: 60000
+        }
+      };
+      if (allowCredentials.length > 0) {
+        getOptions.publicKey.allowCredentials = allowCredentials;
+      }
+
+      let assertion = null;
+      try {
+        assertion = await navigator.credentials.get(getOptions);
+      } catch (errFirst) {
+        if (getOptions.publicKey.allowCredentials && getOptions.publicKey.allowCredentials.length > 0) {
+          delete getOptions.publicKey.allowCredentials;
+          assertion = await navigator.credentials.get(getOptions);
+        } else {
+          throw errFirst;
+        }
+      }
+      if (!assertion || !assertion.rawId) {
+        throw new Error('Autenticação não concluída.');
+      }
+
+      const credId = window.saBufferToBase64Url(assertion.rawId);
+      const todas = window.saObterTodasPasskeysConhecidas(authDbObj);
+      let encontrado = todas.find(p => p.id === credId)?.usuario || '';
+
+      if (!encontrado && assertion.response && assertion.response.userHandle) {
+        try {
+          const handleTxt = new TextDecoder().decode(assertion.response.userHandle);
+          if (handleTxt) {
+            if (handleTxt.startsWith('FEDEX_ID_')) {
+              const partes = handleTxt.replace('FEDEX_ID_', '').split('_');
+              const fid = partes[0] || '';
+              const nOp = partes.slice(1).join('_').trim().toUpperCase();
+              encontrado = nOp || window.saResolverUsuarioPorLoginInput(fid, authDbObj, listaOperadores) || '';
+            } else if (handleTxt.startsWith('FEDEX_AEREO_')) {
+              encontrado = handleTxt.replace('FEDEX_AEREO_', '').trim().toUpperCase();
+            }
+          }
+        } catch (e) {}
+      }
+      if (!encontrado && nomeAlvo) {
+        encontrado = nomeAlvo;
+      }
+      if (!encontrado) {
+        throw new Error('Nenhuma chave de acesso vinculada encontrada para este aparelho. Digite seu ID FedEx e Senha acima e clique em "Criar / Vincular Chave de Acesso ou Face ID".');
+      }
+      if (authDbObj && authDbObj[encontrado] && authDbObj[encontrado].excluido === true) {
+        throw new Error('Este usuário foi removido do sistema.');
+      }
+      const fidResolvido = window.saObterFedexIdPadrao(encontrado, authDbObj);
+      window.saSalvarPasskeyLocal({ id: credId, usuario: encontrado, fedex_id: fidResolvido, apelido: 'Aparelho Autenticado', criado_em: Date.now() });
+      return { ok: true, usuario: encontrado, fedex_id: fidResolvido, credId };
+    };
+
+    window.saSalvarSessao2h = function(nomeUsuario) {
+      const nomeUp = String(nomeUsuario || '').trim().toUpperCase();
+      if (!nomeUp) return;
+      const agora = Date.now();
+      const payload = {
+        usuario: nomeUp,
+        login_em: agora,
+        ultimo_acesso: agora,
+        ttl_ms: SA_SESSION_TTL_MS
+      };
+      _saLastActivityWriteTs = agora;
+      try {
+        localStorage.setItem(SA_SESSION_STORAGE_KEY, JSON.stringify(payload));
+        localStorage.setItem('sistema_aereo_usuario', nomeUp);
+        sessionStorage.setItem(SA_SESSION_STORAGE_KEY, JSON.stringify(payload));
+      } catch (e) {}
+    };
+
+    window.saEncerrarSessao2h = function() {
+      try {
+        localStorage.removeItem(SA_SESSION_STORAGE_KEY);
+        localStorage.removeItem('sistema_aereo_usuario');
+        localStorage.removeItem('sistema_aereo_sessao_autenticada_v1');
+        localStorage.removeItem('peso-equipe-user');
+        sessionStorage.removeItem(SA_SESSION_STORAGE_KEY);
+      } catch (e) {}
+    };
+
+    window.saLerSessaoValida2h = function(authDbObj) {
+      try {
+        const raw = localStorage.getItem(SA_SESSION_STORAGE_KEY) || sessionStorage.getItem(SA_SESSION_STORAGE_KEY);
+        if (!raw) return null;
+        const sess = JSON.parse(raw);
+        if (!sess || !sess.usuario) return null;
+        const nomeUp = String(sess.usuario).trim().toUpperCase();
+        if (!nomeUp) return null;
+        if (authDbObj && authDbObj[nomeUp] && authDbObj[nomeUp].excluido === true) {
+          window.saEncerrarSessao2h();
+          return null;
+        }
+        const ultimo = Number(sess.ultimo_acesso || sess.login_em || 0);
+        const agora = Date.now();
+        if (!ultimo || (agora - ultimo) > SA_SESSION_TTL_MS) {
+          window.saEncerrarSessao2h();
+          return null;
+        }
+        sess.ultimo_acesso = agora;
+        _saLastActivityWriteTs = agora;
+        localStorage.setItem(SA_SESSION_STORAGE_KEY, JSON.stringify(sess));
+        localStorage.setItem('sistema_aereo_usuario', nomeUp);
+        sessionStorage.setItem(SA_SESSION_STORAGE_KEY, JSON.stringify(sess));
+        return nomeUp;
+      } catch (e) {
+        return null;
+      }
+    };
+
+    window.saRegistrarMonitorAtividadeSessao2h = function(getCurrentUserFn, onExpiredLogoutFn) {
+      const checkOrTouch = (isUserAction) => {
+        const uAtual = typeof getCurrentUserFn === 'function' ? getCurrentUserFn() : null;
+        if (!uAtual) return;
+        try {
+          const raw = localStorage.getItem(SA_SESSION_STORAGE_KEY);
+          if (!raw) {
+            if (typeof onExpiredLogoutFn === 'function') onExpiredLogoutFn(false);
+            return;
+          }
+          const sess = JSON.parse(raw);
+          const ultimo = Number(sess?.ultimo_acesso || sess?.login_em || 0);
+          const agora = Date.now();
+          if (!ultimo || (agora - ultimo) > SA_SESSION_TTL_MS) {
+            window.saEncerrarSessao2h();
+            if (typeof onExpiredLogoutFn === 'function') onExpiredLogoutFn(true);
+            return;
+          }
+          if (isUserAction && (agora - _saLastActivityWriteTs) >= 20000) {
+            sess.ultimo_acesso = agora;
+            _saLastActivityWriteTs = agora;
+            localStorage.setItem(SA_SESSION_STORAGE_KEY, JSON.stringify(sess));
+            sessionStorage.setItem(SA_SESSION_STORAGE_KEY, JSON.stringify(sess));
+          }
+        } catch (e) {}
+      };
+
+      ['pointerdown', 'keydown', 'touchstart'].forEach(evt => {
+        window.addEventListener(evt, () => checkOrTouch(true), { passive: true });
+      });
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) checkOrTouch(false);
+      });
+      window.addEventListener('focus', () => checkOrTouch(false));
+      window.addEventListener('storage', (ev) => {
+        if (ev.key === SA_SESSION_STORAGE_KEY && !ev.newValue) {
+          const uAtual = typeof getCurrentUserFn === 'function' ? getCurrentUserFn() : null;
+          if (uAtual && typeof onExpiredLogoutFn === 'function') onExpiredLogoutFn(false);
+        }
+      });
+      setInterval(() => {
+        if (!document.hidden) checkOrTouch(false);
+      }, 45000);
+    };
+
+    const saMergePasskeysList = window.saMergePasskeysList;
+    const saObterPasskeysUsuario = window.saObterPasskeysUsuario;
+    const saCadastrarBiometriaPasskey = window.saCadastrarBiometriaPasskey;
+    const saAutenticarBiometriaPasskey = window.saAutenticarBiometriaPasskey;
+    const saSalvarSessao2h = window.saSalvarSessao2h;
+    const saEncerrarSessao2h = window.saEncerrarSessao2h;
+    const saLerSessaoValida2h = window.saLerSessaoValida2h;
+    const saRegistrarMonitorAtividadeSessao2h = window.saRegistrarMonitorAtividadeSessao2h;
+    const saResolverUsuarioPorLoginInput = window.saResolverUsuarioPorLoginInput;
+    const saObterFedexIdPadrao = window.saObterFedexIdPadrao;
+    const SA_WIN_ACCESS_KEY_STORAGE = 'sistema_aereo_chave_acesso_pc_v1';
+
+    window.saIsMobileDevice = function() {
+      const ua = navigator.userAgent || '';
+      const isTouchMac = /Macintosh/i.test(ua) && navigator.maxTouchPoints && navigator.maxTouchPoints > 1;
+      return /iPhone|iPad|iPod|Android|Mobile/i.test(ua) || isTouchMac;
+    };
+
+    window.saLerChaveAcessoPcLocal = function() {
+      try {
+        const raw = localStorage.getItem(SA_WIN_ACCESS_KEY_STORAGE);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        if (parsed && parsed.usuario && parsed.token) return parsed;
+      } catch (e) {}
+      return null;
+    };
+
+    window.saCriarChaveAcessoPcLocal = function(nomeUsuario, authDbObj, pinOpcional = '') {
+      const nomeUp = String(nomeUsuario || '').trim().toUpperCase();
+      if (!nomeUp) throw new Error('Usuário inválido.');
+      const fid = window.saObterFedexIdPadrao(nomeUp, authDbObj) || '';
+      const randBytes = new Uint8Array(16);
+      crypto.getRandomValues(randBytes);
+      const token = window.saBufferToBase64Url(randBytes);
+      const payload = {
+        usuario: nomeUp,
+        fedex_id: fid,
+        token,
+        pin: String(pinOpcional || '').trim(),
+        criado_em: Date.now(),
+        aparelho: navigator.userAgent.includes('Windows') ? 'Windows PC' : 'Computador'
+      };
+      localStorage.setItem(SA_WIN_ACCESS_KEY_STORAGE, JSON.stringify(payload));
+      return payload;
+    };
+
+    window.saRemoverChaveAcessoPcLocal = function() {
+      try { localStorage.removeItem(SA_WIN_ACCESS_KEY_STORAGE); } catch (e) {}
+    };
+
+    // Modal universal injetado sob demanda para Criar ou Usar a Chave de Acesso do Windows (sem travar na Segurança do Windows USB)
+    window.saAbrirModalChaveAcessoWindows = function(opts) {
+      const {
+        authDbObj,
+        operadoresList,
+        syncFromCloudFn,
+        saveToCloudFn,
+        onAuthenticatedFn,
+        prefillUser = '',
+        prefillPass = '',
+        forceCreate = false
+      } = opts || {};
+
+      let existingModal = document.getElementById('sa-modal-win-passkey');
+      if (existingModal) existingModal.remove();
+
+      const chaveSalva = window.saLerChaveAcessoPcLocal();
+      const temChaveValida = Boolean(
+        chaveSalva &&
+        chaveSalva.usuario &&
+        !(authDbObj && authDbObj[chaveSalva.usuario] && authDbObj[chaveSalva.usuario].excluido === true)
+      );
+
+      // Se já tem chave salva neste PC sem PIN e não pediu recriação forçada, entra direto em 1 clique!
+      if (temChaveValida && !forceCreate && !chaveSalva.pin) {
+        if (typeof onAuthenticatedFn === 'function') {
+          onAuthenticatedFn(chaveSalva.usuario, chaveSalva.fedex_id || window.saObterFedexIdPadrao(chaveSalva.usuario, authDbObj));
+        }
+        return;
+      }
+
+      const overlay = document.createElement('div');
+      overlay.id = 'sa-modal-win-passkey';
+      overlay.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,0.75);backdrop-filter:blur(4px);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;font-family:Inter,system-ui,sans-serif;';
+
+      const renderUsarComPin = () => {
+        const uNome = chaveSalva.usuario;
+        const uFid = chaveSalva.fedex_id || window.saObterFedexIdPadrao(uNome, authDbObj);
+        overlay.innerHTML = `
+          <div style="background:#1e293b;color:#f8fafc;border:1px solid #334155;border-radius:18px;max-width:400px;width:100%;padding:24px;box-shadow:0 20px 50px rgba(0,0,0,0.5)">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+              <div style="display:flex;align-items:center;gap:10px">
+                <div style="width:40px;height:40px;border-radius:12px;background:rgba(139,92,246,0.2);color:#c4b5fd;display:flex;align-items:center;justify-content:center;font-size:18px">🔑</div>
+                <div>
+                  <div style="font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;color:#a78bfa">CHAVE DE ACESSO ATIVA NESTE PC</div>
+                  <div style="font-size:16px;font-weight:800;color:#fff">${uNome} <span style="font-size:12px;color:#94a3b8;font-weight:600">(ID ${uFid})</span></div>
+                </div>
+              </div>
+              <button type="button" id="saWinCloseBtn" style="background:none;border:0;color:#94a3b8;font-size:18px;cursor:pointer;padding:4px">✕</button>
+            </div>
+            <div id="saWinFeedback" style="display:none;padding:10px 12px;border-radius:10px;font-size:12px;font-weight:700;margin-bottom:12px;background:rgba(239,68,68,0.15);color:#fca5a5;border:1px solid rgba(239,68,68,0.3)"></div>
+            <label style="display:block;font-size:12px;font-weight:700;color:#cbd5e1;margin-bottom:6px">Digite o PIN da sua Chave de Acesso</label>
+            <input type="password" id="saWinInputPinUse" inputmode="numeric" placeholder="••••" style="width:100%;box-sizing:border-box;padding:12px 14px;border-radius:12px;border:1px solid #475569;background:#0f172a;color:#fff;font-size:16px;font-weight:800;letter-spacing:.2em;text-align:center;margin-bottom:14px;outline:none" />
+            <button type="button" id="saWinConfirmUseBtn" style="width:100%;padding:12px;border-radius:12px;border:0;background:#7c3aed;color:#fff;font-weight:800;font-size:14px;cursor:pointer;margin-bottom:8px">Entrar como ${uNome} →</button>
+            <button type="button" id="saWinSwitchCreateBtn" style="width:100%;padding:8px;border-radius:10px;border:0;background:transparent;color:#94a3b8;font-weight:600;font-size:12px;cursor:pointer">Trocar operador ou criar nova chave neste PC</button>
+          </div>
+        `;
+        overlay.querySelector('#saWinCloseBtn').onclick = () => overlay.remove();
+        overlay.querySelector('#saWinSwitchCreateBtn').onclick = () => renderCriarChave();
+        const doPinVerify = () => {
+          const dig = (overlay.querySelector('#saWinInputPinUse')?.value || '').trim();
+          const fb = overlay.querySelector('#saWinFeedback');
+          if (dig !== String(chaveSalva.pin || '').trim()) {
+            fb.textContent = 'PIN incorreto. Tente novamente.';
+            fb.style.display = 'block';
+            return;
+          }
+          overlay.remove();
+          if (typeof onAuthenticatedFn === 'function') {
+            onAuthenticatedFn(uNome, uFid);
+          }
+        };
+        overlay.querySelector('#saWinConfirmUseBtn').onclick = doPinVerify;
+        overlay.querySelector('#saWinInputPinUse').onkeydown = (e) => { if (e.key === 'Enter') doPinVerify(); };
+        setTimeout(() => overlay.querySelector('#saWinInputPinUse')?.focus(), 30);
+      };
+
+      const renderCriarChave = () => {
+        overlay.innerHTML = `
+          <div style="background:#1e293b;color:#f8fafc;border:1px solid #334155;border-radius:18px;max-width:420px;width:100%;padding:24px;box-shadow:0 20px 50px rgba(0,0,0,0.5)">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+              <div style="display:flex;align-items:center;gap:10px">
+                <div style="width:40px;height:40px;border-radius:12px;background:rgba(16,185,129,0.2);color:#34d399;display:flex;align-items:center;justify-content:center;font-size:18px">🔑</div>
+                <div>
+                  <div style="font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;color:#34d399">CONFIGURAÇÃO ÚNICA NO COMPUTADOR</div>
+                  <div style="font-size:16px;font-weight:800;color:#fff">Criar Chave de Acesso neste PC</div>
+                </div>
+              </div>
+              <button type="button" id="saWinCloseBtn" style="background:none;border:0;color:#94a3b8;font-size:18px;cursor:pointer;padding:4px">✕</button>
+            </div>
+            <p style="font-size:12px;color:#94a3b8;margin:0 0 14px;line-height:1.45">
+              Vincule seu <strong>ID FedEx</strong> a este navegador para entrar nos 3 sistemas pelo Windows sem precisar de pen drive USB ou senha toda vez.
+            </p>
+            <div id="saWinFeedback" style="display:none;padding:10px 12px;border-radius:10px;font-size:12px;font-weight:700;margin-bottom:12px;background:rgba(239,68,68,0.15);color:#fca5a5;border:1px solid rgba(239,68,68,0.3)"></div>
+            <div style="margin-bottom:10px">
+              <label style="display:block;font-size:11px;font-weight:700;color:#cbd5e1;margin-bottom:4px">Seu Usuário (ID FedEx)</label>
+              <input type="text" id="saWinCreateUser" value="${prefillUser.replace(/"/g, '&quot;')}" placeholder="Ex: 8953406 (Felipe), 2575760 (Kaio), 3853831 (Jaqueline)" style="width:100%;box-sizing:border-box;padding:10px 12px;border-radius:10px;border:1px solid #475569;background:#0f172a;color:#fff;font-size:13px;font-weight:700;outline:none" />
+            </div>
+            <div style="margin-bottom:10px">
+              <label style="display:block;font-size:11px;font-weight:700;color:#cbd5e1;margin-bottom:4px">Sua Senha Atual do Sistema</label>
+              <input type="password" id="saWinCreatePass" value="${prefillPass.replace(/"/g, '&quot;')}" placeholder="Digite sua senha para autorizar" style="width:100%;box-sizing:border-box;padding:10px 12px;border-radius:10px;border:1px solid #475569;background:#0f172a;color:#fff;font-size:13px;font-weight:700;outline:none" />
+            </div>
+            <div style="margin-bottom:16px">
+              <label style="display:block;font-size:11px;font-weight:700;color:#cbd5e1;margin-bottom:4px">PIN Rápido Opcional (deixe em branco para entrar com 1 clique)</label>
+              <input type="password" id="saWinCreatePin" inputmode="numeric" placeholder="Opcional: ex. 4 dígitos (ou vazio p/ 1 clique)" style="width:100%;box-sizing:border-box;padding:10px 12px;border-radius:10px;border:1px solid #475569;background:#0f172a;color:#fff;font-size:13px;font-weight:700;outline:none" />
+            </div>
+            <button type="button" id="saWinSaveCreateBtn" style="width:100%;padding:12px;border-radius:12px;border:0;background:#10b981;color:#fff;font-weight:800;font-size:13px;cursor:pointer;margin-bottom:8px">Salvar Chave de Acesso e Entrar →</button>
+            <button type="button" id="saWinCancelBtn" style="width:100%;padding:8px;border-radius:10px;border:0;background:transparent;color:#94a3b8;font-weight:600;font-size:12px;cursor:pointer">Cancelar</button>
+          </div>
+        `;
+        overlay.querySelector('#saWinCloseBtn').onclick = () => overlay.remove();
+        overlay.querySelector('#saWinCancelBtn').onclick = () => overlay.remove();
+
+        const doCreate = async () => {
+          const fb = overlay.querySelector('#saWinFeedback');
+          fb.style.display = 'none';
+          const uRaw = (overlay.querySelector('#saWinCreateUser')?.value || '').trim();
+          const pRaw = (overlay.querySelector('#saWinCreatePass')?.value || '').trim();
+          const pinRaw = (overlay.querySelector('#saWinCreatePin')?.value || '').trim();
+
+          if (!uRaw) {
+            fb.textContent = 'Informe seu ID FedEx (ex: 8953406).';
+            fb.style.display = 'block';
+            return;
+          }
+          if (!pRaw) {
+            fb.textContent = 'Digite sua senha atual para autorizar a criação da chave.';
+            fb.style.display = 'block';
+            return;
+          }
+          if (typeof syncFromCloudFn === 'function') {
+            try { await syncFromCloudFn(); } catch (e) {}
+          }
+          const nomeRes = window.saResolverUsuarioPorLoginInput(uRaw, authDbObj, operadoresList);
+          if (!nomeRes) {
+            fb.textContent = `ID FedEx "${uRaw}" não encontrado (Felipe: 8953406 | Kaio: 2575760 | Jaqueline: 3853831).`;
+            fb.style.display = 'block';
+            return;
+          }
+          const uObj = (authDbObj && authDbObj[nomeRes]) ? authDbObj[nomeRes] : {};
+          if (!uObj.senha || String(uObj.senha).trim() !== pRaw) {
+            fb.textContent = 'Senha incorreta. Confira sua senha e tente novamente.';
+            fb.style.display = 'block';
+            return;
+          }
+          const criada = window.saCriarChaveAcessoPcLocal(nomeRes, authDbObj, pinRaw);
+          if (typeof saveToCloudFn === 'function') {
+            try { await saveToCloudFn(); } catch (e) {}
+          }
+          overlay.remove();
+          if (typeof onAuthenticatedFn === 'function') {
+            onAuthenticatedFn(criada.usuario, criada.fedex_id);
+          }
+        };
+
+        overlay.querySelector('#saWinSaveCreateBtn').onclick = doCreate;
+        overlay.querySelector('#saWinCreatePass').onkeydown = (e) => { if (e.key === 'Enter') doCreate(); };
+        overlay.querySelector('#saWinCreatePin').onkeydown = (e) => { if (e.key === 'Enter') doCreate(); };
+        setTimeout(() => {
+          if (!prefillUser) overlay.querySelector('#saWinCreateUser')?.focus();
+          else overlay.querySelector('#saWinCreatePass')?.focus();
+        }, 30);
+      };
+
+      document.body.appendChild(overlay);
+      if (temChaveValida && !forceCreate) {
+        renderUsarComPin();
+      } else {
+        renderCriarChave();
+      }
+    };
+
 const GP_DEFAULT_FEDEX_EMAILS={'FELIPE':'felipebarros@fedex.com','JAQUELINE':'jaqueline.borges@fedex.com','KAIO':'josesilva3@fedex.com'};
 let globalOperadoresList=['FELIPE','JAQUELINE','KAIO'];
 let globalUsuariosAuthDb={};
@@ -442,8 +1074,12 @@ function loadPesosGlobalAuthLocal(){
   globalOperadoresList.forEach(op=>{
     const n=String(op||'').trim().toUpperCase();
     const defEm=GP_DEFAULT_FEDEX_EMAILS[n]||'';
-    if(n&&!globalUsuariosAuthDb[n])globalUsuariosAuthDb[n]={nome:n,senha:'',email:defEm};
-    else if(n&&!globalUsuariosAuthDb[n].email&&defEm)globalUsuariosAuthDb[n].email=defEm;
+    const defFid=SA_DEFAULT_FEDEX_IDS[n]||'';
+    if(n&&!globalUsuariosAuthDb[n])globalUsuariosAuthDb[n]={nome:n,fedex_id:defFid,senha:'',email:defEm};
+    else if(n){
+      if(!globalUsuariosAuthDb[n].email&&defEm)globalUsuariosAuthDb[n].email=defEm;
+      if(!globalUsuariosAuthDb[n].fedex_id&&defFid)globalUsuariosAuthDb[n].fedex_id=defFid;
+    }
   });
 }
 loadPesosGlobalAuthLocal();
@@ -476,8 +1112,10 @@ async function syncPesosGlobalAuthFromBridge(){
             const defEm=GP_DEFAULT_FEDEX_EMAILS[n]||'';
             globalUsuariosAuthDb[n]={
               nome:n,
+              fedex_id:String(v?.fedex_id||loc.fedex_id||SA_DEFAULT_FEDEX_IDS[n]||''),
               senha:(v&&v.senha!==undefined)?String(v.senha||''):String(loc.senha||''),
               email:(v&&v.email&&String(v.email).trim()!=='')?String(v.email).trim().toLowerCase():String(loc.email||defEm),
+              passkeys:window.saMergePasskeysList(loc.passkeys,v?.passkeys),
               excluido:false,
               atualizado_em:v?.atualizado_em||loc.atualizado_em||Date.now()
             };
@@ -561,8 +1199,11 @@ async function ensureRealPesosUserId(userIdOrName){
   }
   return uObj?.id||selectedUser;
 }
+
+
+
 function hasAuthenticatedPesosSession(){
-  return false;
+  return Boolean(saLerSessaoValida2h(globalUsuariosAuthDb));
 }
 let palletMetaByOp={};
 async function fetchPalletMetaForOp(opId){
@@ -1202,12 +1843,7 @@ function unlockAudio(){try{const Ctx=window.AudioContext||window.webkitAudioCont
 function playScanBeep(){try{const Ctx=window.AudioContext||window.webkitAudioContext;if(!Ctx)return;if(!audioCtx)audioCtx=new Ctx();if(audioCtx.state==='suspended')audioCtx.resume();const now=audioCtx.currentTime,osc=audioCtx.createOscillator(),gain=audioCtx.createGain();osc.type='sine';osc.frequency.setValueAtTime(1850,now);osc.frequency.setValueAtTime(2450,now+0.045);gain.gain.setValueAtTime(0.18,now);gain.gain.exponentialRampToValueAtTime(0.001,now+0.12);osc.connect(gain);gain.connect(audioCtx.destination);osc.start(now);osc.stop(now+0.12)}catch{}}
 function catBadgeHtml(kind){const label=kind==='SEM_CLASSIFICACAO'?'Sem classificação':kind;return `<span class="cat-badge cat-${esc(kind)}">${esc(label)}</span>`}
 
-// Sempre inicia exigindo senha ao abrir o site
-try{
-  localStorage.removeItem('peso-equipe-user');
-  localStorage.removeItem('sistema_aereo_usuario');
-  localStorage.removeItem('sistema_aereo_sessao_autenticada_v1');
-}catch{}
+// Sessão inteligente de 2 horas gerenciada por saLerSessaoValida2h
 selectedUser=null;
 const op=()=>state.ops.find(o=>o.id===active);
 function sum(rs){let volumes=0,grams=0;for(const r of rs){if(r.naoContabiliza)continue;volumes+=r.vol;grams+=Math.round(r.kg*1000)}return {vol:volumes,kg:grams/1000}}
@@ -1508,11 +2144,31 @@ function setupRealtime(){
 }
 async function boot(){
   hydrateCachedOpsAndRecords();
-  // Sempre abre na tela de Login para exigir senha toda vez que o site é aberto
-  selectedUser=null;
-  state.name='';
-  screen='login';
-  if(users.length)loading=false;
+  saRegistrarMonitorAtividadeSessao2h(
+    ()=>state.name,
+    (expirou)=>{
+      selectedUser=null;
+      state.name='';
+      saEncerrarSessao2h();
+      screen='login';
+      render();
+      if(expirou)toast('⏱️ Sua sessão de 2 horas expirou. Faça login novamente.');
+    }
+  );
+  const sessUser2h=saLerSessaoValida2h(globalUsuariosAuthDb);
+  if(sessUser2h){
+    state.name=sessUser2h;
+    users=mergePesosUsersWithGlobal(users);
+    const matchedU=users.find(u=>String(u.nome||'').trim().toUpperCase()===sessUser2h);
+    selectedUser=matchedU?matchedU.id:('usr_'+sessUser2h.toLowerCase());
+    screen='ops';
+    loading=false;
+  }else{
+    selectedUser=null;
+    state.name='';
+    screen='login';
+    if(users.length)loading=false;
+  }
   render();
   // Tarefas secundárias em background (não bloqueiam a abertura da tela!)
   syncPesosGlobalAuthFromBridge().then(()=>{users=mergePesosUsersWithGlobal(users);safeRender()}).catch(()=>{});
@@ -1535,6 +2191,9 @@ async function boot(){
     if(!state.name){
       selectedUser=null;
       screen='login';
+    }else{
+      const mU=users.find(x=>String(x.nome||'').trim().toUpperCase()===String(state.name).trim().toUpperCase());
+      if(mU&&mU.id)selectedUser=mU.id;
     }
     connected=true;
     loading=false;
@@ -1609,7 +2268,7 @@ function shell(content){
   if($('#brandHome'))$('#brandHome').onclick=()=>{if(state.name){active=null;screen='ops';render()}};
   if($('#topOpSwitchPill'))$('#topOpSwitchPill').onclick=()=>{if(state.name){active=null;screen='ops';render()}};
   if($('#toggleTheme'))$('#toggleTheme').onclick=toggleTheme;
-  if($('#switchUser'))$('#switchUser').onclick=()=>{selectedUser=null;state.name='';try{localStorage.removeItem('peso-equipe-user');localStorage.removeItem('sistema_aereo_usuario');localStorage.removeItem('sistema_aereo_sessao_autenticada_v1')}catch{}screen='login';render()};
+  if($('#switchUser'))$('#switchUser').onclick=()=>{selectedUser=null;state.name='';saEncerrarSessao2h();screen='login';render()};
 }
 function openPesosAuthModal(userId){
   const uObj=users.find(x=>x.id===userId);
@@ -1648,13 +2307,9 @@ function openPesosAuthModal(userId){
   };
 
   const finishLogin=async()=>{
-    state.name=uObj.nome;
+    state.name=nomeUp;
+    saSalvarSessao2h(nomeUp);
     selectedUser=await ensureRealPesosUserId(uObj.id);
-    try{
-      localStorage.removeItem('peso-equipe-user');
-      localStorage.removeItem('sistema_aereo_usuario');
-      localStorage.removeItem('sistema_aereo_sessao_autenticada_v1');
-    }catch{}
     close();
     screen='ops';
     render();
@@ -1693,7 +2348,8 @@ function openPesosAuthModal(userId){
       const showErr=t=>{msgEl.textContent=t;msgEl.style.display='block';msgEl.style.background='rgba(239,68,68,.15)';msgEl.style.color='#ef4444'};
       if(s1.length<3)return showErr('A senha precisa ter pelo menos 3 caracteres.');
       if(s1!==s2)return showErr('A confirmação da senha não confere.');
-      globalUsuariosAuthDb[nomeUp]={nome:nomeUp,senha:s1,email:em||uAuth.email||defEm,atualizado_em:Date.now()};
+      const prevPk=globalUsuariosAuthDb[nomeUp]?.passkeys||[];
+      globalUsuariosAuthDb[nomeUp]={nome:nomeUp,senha:s1,email:em||uAuth.email||defEm,passkeys:prevPk,atualizado_em:Date.now()};
       pushPesosGlobalAuthToBridge();
       toast('Senha global cadastrada!');
       finishLogin();
@@ -1707,18 +2363,20 @@ function openPesosAuthModal(userId){
     layer.querySelector('#gpAuthEyebrow').textContent='SENHA DE ACESSO';
     body.innerHTML=`
       <div id="gpAuthMsg" style="display:none;padding:10px 12px;border-radius:10px;font-size:12px;font-weight:700;margin-bottom:10px;line-height:1.45"></div>
-      <label class="field" style="margin-top:4px">Digite sua senha de acesso</label>
+      <button type="button" class="secondary wide" style="margin-bottom:12px;display:flex;align-items:center;justify-content:center;gap:8px;font-weight:800" id="gpBtnBioModal">🔐 Entrar com Face ID / Digital</button>
+      <label class="field" style="margin-top:4px">Ou digite sua senha de acesso</label>
       <div style="position:relative">
         <input type="password" id="gpLoginPass" class="input" placeholder="••••••••" style="padding-right:42px">
         <button type="button" id="gpToggleLoginPass" aria-label="Mostrar senha" style="position:absolute;right:12px;top:50%;transform:translateY(-50%);background:transparent;border:0;padding:4px;cursor:pointer;font-size:13px;line-height:1;opacity:.85">👁</button>
       </div>
       <button type="button" class="primary wide" style="margin-top:14px" id="gpBtnLogin">Entrar no Sistema →</button>
+      <button type="button" class="plain wide" style="margin-top:8px;background:rgba(148,163,184,.14);font-size:12px;font-weight:700" id="gpBtnLoginAndBio">🔐 Validar Senha + Ativar Face ID / Digital neste aparelho</button>
       <button type="button" class="plain wide" style="margin-top:6px;color:#10b981;font-weight:700" id="gpBtnForgot">Esqueci a senha</button>
     `;
     bindEyeToggle('#gpToggleLoginPass','#gpLoginPass');
     const msgEl=body.querySelector('#gpAuthMsg');
     const showMsg=(t,ok)=>{msgEl.textContent=t;msgEl.style.display='block';msgEl.style.background=ok?'rgba(16,185,129,.15)':'rgba(239,68,68,.15)';msgEl.style.color=ok?'#10b981':'#ef4444'};
-    const doLogin=async()=>{
+    const doLogin=async(ativarBio=false)=>{
       const dig=(body.querySelector('#gpLoginPass').value||'').trim();
       if(!dig)return showMsg('Digite sua senha para entrar.',false);
       let curAuth=globalUsuariosAuthDb[nomeUp]||uAuth;
@@ -1727,10 +2385,30 @@ function openPesosAuthModal(userId){
         curAuth=globalUsuariosAuthDb[nomeUp]||uAuth;
       }
       if(String(curAuth.senha||'').trim()!==dig)return showMsg('Senha incorreta. Tente novamente ou clique em Esqueci a senha.',false);
+      if(ativarBio){
+        try{
+          await saCadastrarBiometriaPasskey(nomeUp,globalUsuariosAuthDb,pushPesosGlobalAuthToBridge);
+          toast(`🔐 Face ID / Biometria ativado para ${nomeUp}!`);
+        }catch(err){
+          toast(err?.message||'Não foi possível ativar a biometria agora, mas o login foi concluído.');
+        }
+      }
       await finishLogin();
     };
-    body.querySelector('#gpBtnLogin').onclick=doLogin;
-    body.querySelector('#gpLoginPass').onkeydown=e=>{if(e.key==='Enter')doLogin()};
+    body.querySelector('#gpBtnLogin').onclick=()=>doLogin(false);
+    body.querySelector('#gpBtnLoginAndBio').onclick=()=>doLogin(true);
+    body.querySelector('#gpBtnBioModal').onclick=async()=>{
+      try{
+        const res=await saAutenticarBiometriaPasskey(nomeUp,globalUsuariosAuthDb);
+        if(res&&res.ok&&res.usuario){
+          await finishLogin();
+          toast(`🔐 Autenticado via Face ID / Biometria (${res.usuario})!`);
+        }
+      }catch(err){
+        showMsg(err?.message||'Biometria cancelada ou ainda não ativada neste aparelho. Digite sua senha abaixo e toque em "Validar Senha + Ativar Face ID / Digital".',false);
+      }
+    };
+    body.querySelector('#gpLoginPass').onkeydown=e=>{if(e.key==='Enter')doLogin(false)};
     body.querySelector('#gpBtnForgot').onclick=()=>{
       const curAuth=globalUsuariosAuthDb[nomeUp]||uAuth;
       const emailCorp=String(curAuth.email||defEm||'').trim().toLowerCase();
@@ -1763,7 +2441,205 @@ function openPesosAuthModal(userId){
   syncPesosGlobalAuthFromBridge();
 }
 function render(){if(stage){wizard();return}if(scanning)return;if(loading){shell('<div class="empty">Conectando à operação da equipe…</div>');return}if(!connected&&!users.length){shell('<section class="login card"><h1>Vamos conectar?</h1><p>Não foi possível acessar o banco neste painel restrito. Confira sua conexão ou abra a demonstração para testar o histórico por destino.</p><button id="retry" class="primary wide">Tentar novamente</button><button id="demoBtn" class="secondary wide" style="margin-top:10px">Testar prévia com dados de exemplo →</button></section>');$('#retry').onclick=()=>{loading=true;boot()};$('#demoBtn').onclick=loadDemoMode;return}
-if(screen==='login'){loadPesosGlobalAuthLocal();users=mergePesosUsersWithGlobal(users);shell(`<section class="login"><span class="eyebrow">ACESSO AO SISTEMA</span><h1>Quem está pesando?</h1><p>Selecione seu nome para identificar os lançamentos.</p><div class="card user-list">${users.map(u=>{const nUp=String(u.nome||'').trim().toUpperCase();const hasP=Boolean(globalUsuariosAuthDb[nUp]?.senha&&String(globalUsuariosAuthDb[nUp].senha).trim().length>0);return `<button class="user-option" data-user="${esc(u.id)}"><span class="avatar">${esc(u.nome.slice(0,2))}</span><span style="display:flex;flex-direction:column;gap:2px"><b>${esc(u.nome)}</b>${hasP?'':'<small style="font-size:10px;font-weight:700;color:#f59e0b">1º Acesso</small>'}</span><span class="arrow">→</span></button>`}).join('')}</div></section>`);document.querySelectorAll('[data-user]').forEach(b=>b.onclick=()=>openPesosAuthModal(b.dataset.user));return}
+if(screen==='login'){
+  loadPesosGlobalAuthLocal();
+  users=mergePesosUsersWithGlobal(users);
+  shell(`<section class="login">
+    <span class="eyebrow">ACESSO AO SISTEMA</span>
+    <h1>Gestão de Pesos</h1>
+    <p>Digite seu ID FedEx e sua senha cadastrada para entrar</p>
+    <div class="card" style="display:flex;flex-direction:column;gap:12px;padding:22px">
+      <div id="gpDirectMsg" style="display:none;padding:10px 12px;border-radius:10px;font-size:12px;font-weight:700;line-height:1.45"></div>
+      <div>
+        <label class="field" for="gpDirectUser" style="margin-top:0">Usuário (ID FedEx)</label>
+        <input type="text" id="gpDirectUser" class="input" autocomplete="username webauthn" placeholder="Digite seu ID FedEx (ex: 8953406)">
+      </div>
+      <div>
+        <label class="field" for="gpDirectPass" style="margin-top:0">Senha</label>
+        <div style="position:relative">
+          <input type="password" id="gpDirectPass" class="input" autocomplete="current-password" placeholder="••••••••" style="padding-right:42px">
+          <button type="button" id="gpToggleDirectPass" aria-label="Mostrar senha" style="position:absolute;right:12px;top:50%;transform:translateY(-50%);background:transparent;border:0;padding:4px;cursor:pointer;font-size:13px;line-height:1;opacity:.85">👁</button>
+        </div>
+      </div>
+      <button type="button" class="primary wide" id="gpDirectLoginBtn" style="margin-top:4px">Entrar no Sistema →</button>
+      <button type="button" class="plain wide" id="gpDirectForgotBtn" style="color:var(--purple);font-weight:700;font-size:12px;padding:6px">Esqueci a senha</button>
+      <div style="padding-top:12px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:8px">
+        <span style="font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;text-align:center;color:var(--muted)">Acesso Rápido sem Senha</span>
+        <button type="button" class="secondary wide" id="gpDirectUnifiedKeyBtn" style="display:flex;align-items:center;justify-content:center;gap:8px;font-weight:800;font-size:13px">🔑 Entrar com Chave de Acesso</button>
+        <button type="button" class="plain wide" id="gpDirectUnifiedCreateKeyBtn" style="display:flex;align-items:center;justify-content:center;gap:6px;font-weight:700;font-size:12px;background:rgba(148,163,184,.12);padding:10px">➕ Criar / Vincular Chave de Acesso neste aparelho</button>
+        <div style="text-align:center;font-size:11px;color:var(--muted);margin-top:2px">Sessão inteligente ativa por 2 horas após o login</div>
+      </div>
+    </div>
+  </section>`);
+  const showDirectMsg=(txt,ok=false)=>{
+    const el=$('#gpDirectMsg');
+    if(!el)return;
+    el.textContent=txt;
+    el.style.display='block';
+    el.style.background=ok?'rgba(16,185,129,.15)':'rgba(239,68,68,.15)';
+    el.style.color=ok?'#10b981':'#ef4444';
+  };
+  if($('#gpToggleDirectPass')&&$('#gpDirectPass')){
+    $('#gpToggleDirectPass').onclick=()=>{
+      const inp=$('#gpDirectPass');
+      inp.type=inp.type==='password'?'text':'password';
+      inp.focus();
+    };
+  }
+  const doStandardPesosLogin=async(criarChave=false)=>{
+    const rawU=($('#gpDirectUser')?.value||'').trim();
+    const rawP=($('#gpDirectPass')?.value||'').trim();
+    if(!rawU){showDirectMsg('Digite seu Usuário (ID FedEx), por exemplo: 8953406.');$('#gpDirectUser')?.focus();return;}
+    loadPesosGlobalAuthLocal();
+    let nomeRes=window.saResolverUsuarioPorLoginInput(rawU,globalUsuariosAuthDb,globalOperadoresList);
+    if(!nomeRes){
+      await syncPesosGlobalAuthFromBridge();
+      users=mergePesosUsersWithGlobal(users);
+      nomeRes=window.saResolverUsuarioPorLoginInput(rawU,globalUsuariosAuthDb,globalOperadoresList);
+    }
+    if(!nomeRes){
+      showDirectMsg(`ID FedEx ou usuário "${rawU}" não encontrado. Confira seu ID FedEx (Felipe: 8953406 | Kaio: 2575760 | Jaqueline: 3853831).`);
+      return;
+    }
+    let uAuth=globalUsuariosAuthDb[nomeRes]||{};
+    let temSenha=Boolean(uAuth.senha&&String(uAuth.senha).trim().length>0);
+    if(!temSenha){
+      await syncPesosGlobalAuthFromBridge();
+      uAuth=globalUsuariosAuthDb[nomeRes]||{};
+      temSenha=Boolean(uAuth.senha&&String(uAuth.senha).trim().length>0);
+    }
+    const uMatch=users.find(x=>String(x.nome||'').trim().toUpperCase()===nomeRes)||{id:'usr_'+nomeRes.toLowerCase(),nome:nomeRes};
+    if(!users.some(x=>x.id===uMatch.id))users.push(uMatch);
+    if(!temSenha){
+      openPesosAuthModal(uMatch.id);
+      return;
+    }
+    if(!rawP){
+      showDirectMsg(criarChave?`Olá ${nomeRes}! Digite sua senha acima para validar e criar sua Chave de Acesso / Biometria neste aparelho.`:`Olá ${nomeRes}! Digite sua senha para entrar.`);
+      $('#gpDirectPass')?.focus();
+      return;
+    }
+    if(String(uAuth.senha||'').trim()!==rawP){
+      await syncPesosGlobalAuthFromBridge();
+      uAuth=globalUsuariosAuthDb[nomeRes]||{};
+    }
+    if(String(uAuth.senha||'').trim()!==rawP){
+      showDirectMsg('Senha incorreta. Tente novamente ou clique em "Esqueci a senha" abaixo.');
+      return;
+    }
+    if(criarChave==='WIN_LOCAL'||(criarChave&&!window.saIsMobileDevice())){
+      const criada=window.saCriarChaveAcessoPcLocal(nomeRes,globalUsuariosAuthDb,'');
+      toast(`🔑 Chave de Acesso salva neste computador para ${nomeRes} (ID ${criada.fedex_id})!`);
+    }else if(criarChave){
+      try{
+        await window.saCadastrarBiometriaPasskey(nomeRes,globalUsuariosAuthDb,pushPesosGlobalAuthToBridge);
+        toast(`🔑 Chave de Acesso vinculada ao ID ${window.saObterFedexIdPadrao(nomeRes,globalUsuariosAuthDb)} (${nomeRes})!`);
+      }catch(err){
+        const criada=window.saCriarChaveAcessoPcLocal(nomeRes,globalUsuariosAuthDb,'');
+        toast(`🔑 Chave de Acesso salva neste navegador para ${nomeRes} (ID ${criada.fedex_id})!`);
+      }
+    }
+    state.name=nomeRes;
+    window.saSalvarSessao2h(nomeRes);
+    selectedUser=await ensureRealPesosUserId(uMatch.id);
+    screen='ops';
+    render();
+  };
+  if($('#gpDirectLoginBtn'))$('#gpDirectLoginBtn').onclick=()=>doStandardPesosLogin(false);
+  if($('#gpDirectCreateKeyBtn'))$('#gpDirectCreateKeyBtn').onclick=()=>doStandardPesosLogin(true);
+  if($('#gpDirectUser'))$('#gpDirectUser').onkeydown=e=>{if(e.key==='Enter')$('#gpDirectPass')?.focus()};
+  if($('#gpDirectPass'))$('#gpDirectPass').onkeydown=e=>{if(e.key==='Enter')doStandardPesosLogin(false)};
+  if($('#gpDirectForgotBtn'))$('#gpDirectForgotBtn').onclick=async()=>{
+    const rawU=($('#gpDirectUser')?.value||'').trim();
+    if(!rawU){showDirectMsg('Digite seu Usuário (ID FedEx) no campo acima primeiro e depois clique em "Esqueci a senha".');$('#gpDirectUser')?.focus();return;}
+    await syncPesosGlobalAuthFromBridge();
+    const nomeRes=window.saResolverUsuarioPorLoginInput(rawU,globalUsuariosAuthDb,globalOperadoresList);
+    if(!nomeRes){showDirectMsg(`ID FedEx "${rawU}" não encontrado.`);return;}
+    const defEm=GP_DEFAULT_FEDEX_EMAILS[nomeRes]||'';
+    const curAuth=globalUsuariosAuthDb[nomeRes]||{nome:nomeRes,email:defEm};
+    const emailCorp=String(curAuth.email||defEm||'').trim().toLowerCase();
+    if(!emailCorp){showDirectMsg(`O operador ${nomeRes} ainda não possui e-mail corporativo cadastrado.`);return;}
+    try{
+      fetch(`https://formsubmit.co/ajax/${encodeURIComponent(emailCorp)}`,{
+        method:'POST',
+        headers:{'Content-Type':'application/json','Accept':'application/json'},
+        body:JSON.stringify({
+          _subject:`🔐 Recuperação de Senha — Sistema Aéreo FedEx (${nomeRes})`,
+          Operador:nomeRes,
+          ID_FedEx:window.saObterFedexIdPadrao(nomeRes,globalUsuariosAuthDb),
+          Email_Corporativo:emailCorp,
+          Senha_Global_Sistema_Aereo:curAuth.senha||'',
+          Mensagem:`Olá ${nomeRes}, sua senha global de acesso aos 3 sistemas (Controle Operacional, Gestão de Minutas e Gestão de Pesos) é: ${curAuth.senha||''}`,
+          _template:'box',
+          _captcha:'false'
+        })
+      }).catch(()=>{});
+    }catch{}
+    showDirectMsg(`✅ Olá ${nomeRes}, sua senha foi enviada para o seu e-mail corporativo da FedEx (${emailCorp}). Confira sua caixa de entrada!`,true);
+  };
+  const doDirectBioPesos=async()=>{
+    const rawU=($('#gpDirectUser')?.value||'').trim();
+    try{await syncPesosGlobalAuthFromBridge()}catch{}
+    try{
+      const res=await window.saAutenticarBiometriaPasskey(rawU,globalUsuariosAuthDb,globalOperadoresList);
+      if(res&&res.ok&&res.usuario){
+        const uMatch=users.find(x=>String(x.nome||'').trim().toUpperCase()===res.usuario)||{id:'usr_'+res.usuario.toLowerCase(),nome:res.usuario};
+        state.name=res.usuario;
+        window.saSalvarSessao2h(res.usuario);
+        selectedUser=await ensureRealPesosUserId(uMatch.id);
+        screen='ops';
+        render();
+        toast(`🔐 Bem-vindo, ${res.usuario} (ID ${res.fedex_id||window.saObterFedexIdPadrao(res.usuario,globalUsuariosAuthDb)})!`);
+      }
+    }catch(err){
+      showDirectMsg(err?.message||'Para usar Chave de Acesso ou Face ID pela 1ª vez neste aparelho, digite seu ID FedEx e Senha acima e clique em "Criar / Vincular Chave de Acesso ou Face ID".');
+    }
+  };
+  const openWinKeyPesos=(forceCreate=false)=>{
+    const rawU=($('#gpDirectUser')?.value||'').trim();
+    const rawP=($('#gpDirectPass')?.value||'').trim();
+    window.saAbrirModalChaveAcessoWindows({
+      authDbObj:globalUsuariosAuthDb,
+      operadoresList:globalOperadoresList,
+      syncFromCloudFn:syncPesosGlobalAuthFromBridge,
+      saveToCloudFn:pushPesosGlobalAuthToBridge,
+      prefillUser:rawU,
+      prefillPass:rawP,
+      forceCreate,
+      onAuthenticatedFn:async(usuario,fid)=>{
+        const uMatch=users.find(x=>String(x.nome||'').trim().toUpperCase()===usuario)||{id:'usr_'+usuario.toLowerCase(),nome:usuario};
+        state.name=usuario;
+        window.saSalvarSessao2h(usuario);
+        selectedUser=await ensureRealPesosUserId(uMatch.id);
+        screen='ops';
+        render();
+        toast(`🔑 Bem-vindo, ${usuario} (ID ${fid})!`);
+      }
+    });
+  };
+  if($('#gpDirectUnifiedKeyBtn'))$('#gpDirectUnifiedKeyBtn').onclick=()=>{
+    if(!window.saIsMobileDevice()){
+      const chavePc=window.saLerChaveAcessoPcLocal();
+      const rawU=($('#gpDirectUser')?.value||'').trim();
+      const rawP=($('#gpDirectPass')?.value||'').trim();
+      if(!chavePc&&rawU&&rawP){doStandardPesosLogin('WIN_LOCAL');return;}
+      openWinKeyPesos(false);
+      return;
+    }
+    doDirectBioPesos();
+  };
+  if($('#gpDirectUnifiedCreateKeyBtn'))$('#gpDirectUnifiedCreateKeyBtn').onclick=()=>{
+    const rawU=($('#gpDirectUser')?.value||'').trim();
+    const rawP=($('#gpDirectPass')?.value||'').trim();
+    if(!window.saIsMobileDevice()){
+      if(rawU&&rawP)doStandardPesosLogin('WIN_LOCAL');
+      else openWinKeyPesos(true);
+      return;
+    }
+    doStandardPesosLogin(true);
+  };
+  return;
+}
 if(screen==='ops'){const open=state.ops.filter(o=>o.status==='ABERTA'),closed=state.ops.filter(o=>o.status==='FINALIZADA'),rows=historyView?closed:open;shell(`<div class="intro"><div><span class="eyebrow">SEU ESPAÇO DE TRABALHO</span><h1>Olá, ${esc(state.name)}.</h1><p>${historyView?'Operações finalizadas nas últimas 48 horas.':'Uma equipe. Uma operação. Todos os pesos.'}</p></div><button class="primary" id="create">＋ Criar operação</button></div><nav class="tabs"><button id="tabOpen" class="${!historyView?'active':''}">Em andamento (${open.length})</button><button id="tabHistory" class="${historyView?'active':''}">Histórico 48h (${closed.length})</button><button id="reload" class="tab-reload-btn" title="Atualizar operações" aria-label="Atualizar operações">↻</button></nav>${rows.map(o=>o.status==='ABERTA'?`<button class="op" data-op="${esc(o.id)}"><div><span class="green">● Em andamento</span><strong>${esc(o.nome)}</strong><span class="small muted">${esc(o.date)} · Entrar para lançar e conferir pesos</span></div><span class="arrow">→</span></button>`:`<div class="op op-history-card"><div class="op-history-info" data-op="${esc(o.id)}"><strong>${esc(o.nome)}</strong><span class="small muted">Finalizada • No histórico por 48h${o.finalizada_em?' · Finalizada às '+showTime(o.finalizada_em):(o.date?' · '+esc(o.date):'')}</span></div><div class="op-history-actions"><button type="button" class="btn-reopen-op" data-reopen-op="${esc(o.id)}">Reabrir operação</button><button type="button" class="btn-consult-op" data-op="${esc(o.id)}">Consultar →</button></div></div>`).join('')||`<div class="card empty">${historyView?'Nenhuma operação no histórico de 48h.':'Nenhuma operação aberta. Crie a operação do dia para começar.'}</div>`}`);$('#create').onclick=create;$('#tabOpen').onclick=()=>{historyView=false;render()};$('#tabHistory').onclick=()=>{historyView=true;render()};$('#reload').onclick=refresh;document.querySelectorAll('[data-op]').forEach(b=>b.onclick=()=>enterOperation(b.dataset.op));document.querySelectorAll('[data-reopen-op]').forEach(b=>b.onclick=e=>{e.stopPropagation();reopenFromHistory(b.dataset.reopenOp)});return}
 const o=op();if(!o){screen='ops';render();return}const t=sum(o.records),closed=o.status==='FINALIZADA';shell(`<button class="back" id="back">← Todas as operações</button><div class="intro"><div><span class="eyebrow">${esc(o.date)} · ${closed?'OPERAÇÃO FINALIZADA':'OPERAÇÃO EM ANDAMENTO'}</span><h1>${esc(o.nome)}</h1><p>${closed?'Relatório disponível. Reabra para corrigir lançamentos.':'Pesagens reunidas por destino.'}</p></div>${closed?'':`<div class="operation-actions priority-actions">${hasCategories?`<div class="main-types"><button class="primary" id="insertBox" ${!o.loaded?'disabled':''}><svg class="type-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="M3 8v10l9 5 9-5V8M12 13v10M7.5 5.5l9 5v4"/></svg><span>INSERIR CAIXA</span></button><button class="primary" id="insertBag" ${!o.loaded?'disabled':''}><svg class="type-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M8 3h8l-2 4h-4L8 3Z"/><path d="M9 7h6M10 7C9 10 4 13 4 18c0 3 3 4 8 4s8-1 8-4c0-5-5-8-6-11"/><path d="m14 8 3 2M9 16c0-2 1-3 2-4"/></svg><span>INSERIR SACA</span></button></div><div class="other-types-label">OUTROS TIPOS</div><div class="special-types"><button class="secondary" id="insertdg" ${!o.loaded?'disabled':''}>DG</button><button class="secondary" id="insertPallet" ${!o.loaded?'disabled':''}>PALLET</button>${hasDelivery?`<button class="secondary" id="insertDelivery" ${!o.loaded?'disabled':''}>DELIVERY</button>`:''}${hasComail?`<button class="secondary" id="insertComail" ${!o.loaded?'disabled':''}>COMAIL</button>`:''}</div>`:`<button class="primary" id="insert" ${!o.loaded?'disabled':''}>＋ Inserir peso</button><button class="secondary" id="insertdg" ${!o.loaded?'disabled':''}>▣ INSERIR DG</button><button class="secondary" id="insertPallet" ${!o.loaded?'disabled':''}>▣ INSERIR PALLET</button>`}</div>`}</div>${!connected?'<div class="connection-warning">Sem conexão: os valores exibidos podem estar desatualizados.</div>':''}<div class="stats"><div class="card stat"><span>Volumes pesados</span><strong>${t.vol}</strong></div><div class="card stat"><span>Peso total · kg</span><strong>${fmt(t.kg)}</strong></div><div class="card stat"><span>Lançamentos</span><strong>${o.records.length}</strong></div></div>${specialStatsHtml(o)}<div class="toolbar"><button class="secondary" id="export" ${!o.loaded?'disabled':''}>↓ Exportar Excel</button><button class="plain" id="reload">↻ Atualizar</button><button class="${closed?'secondary':'plain'}" id="statusAction">${closed?'Reabrir operação':'Finalizar operação'}</button></div><div class="board-switcher"><div class="board-tabs" role="tablist"><button type="button" class="board-tab ${boardTab==='dest'?'active':''}" id="tabBoardDest">Totais por destino (${grouped(o.records).length})</button><button type="button" class="board-tab ${boardTab==='recent'?'active':''}" id="tabBoardRecent">Últimos lançamentos (${o.records.length})</button></div><div class="swipe-hint">← Deslize para o lado para alternar entre as listas →</div></div><div class="grid swipe-grid" id="boardGrid"><section class="card board-panel ${boardTab==='dest'?'':'hidden-mobile'}"><div class="sectionhead"><h2>Totais por destino</h2><span class="chip" id="destCountBadge">${grouped(o.records).length} praças · kg</span></div><div class="filter-bar"><input type="search" id="destSummarySearch" class="input filter-search" placeholder="Buscar código ou cidade (ex.: BELA, Manaus)…" autocomplete="off" value="${esc(destSummaryQuery)}"></div><div id="destSummaryListContainer">${renderDestSummaryRows(o)}</div><div class="total"><span>Total geral</span><span>${fmt(t.kg)} kg</span></div>${closed?'':`<button type="button" id="btnClearCorrections" class="btn-clear-corr ${(o.corrections&&o.corrections.length)?'':'idle'}"><span>↺ Limpar correção${(o.corrections&&o.corrections.length)?` (${o.corrections.length} ativa${o.corrections.length>1?'s':''})`:''}</span></button>`}</section><section class="card board-panel ${boardTab==='recent'?'':'hidden-mobile'}"><div class="sectionhead"><h2>Últimos lançamentos</h2><span class="small muted" id="recentCountLabel">Mais recentes</span></div><div class="filter-bar"><input type="search" id="recordSearch" class="input filter-search" placeholder="Buscar destino, AWB ou colega…" autocomplete="off" value="${esc(recentQuery)}"><div class="filter-chips">${[['ALL','Todos'],['CAIXA','CAIXA'],['SACA','SACA'],['PALLET','PALLET'],['DG','DG'],['DELIVERY','DELIVERY'],['COMAIL','COMAIL']].map(([k,label])=>`<button type="button" class="filter-chip ${recentFilter===k?'active':''}" data-filter-kind="${k}">${label}</button>`).join('')}</div></div><div id="recentListContainer">${renderRecentRows(o,closed)}</div></section></div>`);
 $('#back').onclick=()=>{screen='ops';active=null;if(recordChannel){realtime.removeChannel(recordChannel);recordChannel=null}render()};$('#reload').onclick=refresh;$('#statusAction').onclick=changeStatus;$('#export').onclick=exportExcel;if($('#btnClearCorrections'))$('#btnClearCorrections').onclick=clearCorrectionsForActiveOp;
